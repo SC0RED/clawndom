@@ -28,9 +28,9 @@ describe('Webhook Controller', () => {
     const signature = computeSignature(payload, secret);
 
     const response = await supertest(app)
-      .post('/hooks/jira')
+      .post('/')
       .set('Content-Type', 'application/json')
-      .set('X-Hub-Signature-256', signature)
+      .set('X-Hub-Signature', signature)
       .send(payload);
 
     expect(response.status).toBe(202);
@@ -39,10 +39,10 @@ describe('Webhook Controller', () => {
 
   it('should return 401 for invalid HMAC signature', async () => {
     const response = await supertest(app)
-      .post('/hooks/jira')
+      .post('/')
       .set('Content-Type', 'application/json')
       .set(
-        'X-Hub-Signature-256',
+        'X-Hub-Signature',
         'sha256=deadbeef00000000000000000000000000000000000000000000000000000000',
       )
       .send(payload);
@@ -53,9 +53,9 @@ describe('Webhook Controller', () => {
 
   it('should return 401 for signature with wrong prefix', async () => {
     const response = await supertest(app)
-      .post('/hooks/jira')
+      .post('/')
       .set('Content-Type', 'application/json')
-      .set('X-Hub-Signature-256', 'md5=abc123')
+      .set('X-Hub-Signature', 'md5=abc123')
       .send(payload);
 
     expect(response.status).toBe(401);
@@ -64,9 +64,9 @@ describe('Webhook Controller', () => {
 
   it('should return 401 for signature with wrong length', async () => {
     const response = await supertest(app)
-      .post('/hooks/jira')
+      .post('/')
       .set('Content-Type', 'application/json')
-      .set('X-Hub-Signature-256', 'sha256=abcd')
+      .set('X-Hub-Signature', 'sha256=abcd')
       .send(payload);
 
     expect(response.status).toBe(401);
@@ -75,7 +75,7 @@ describe('Webhook Controller', () => {
 
   it('should return 401 when signature header is missing', async () => {
     const response = await supertest(app)
-      .post('/hooks/jira')
+      .post('/')
       .set('Content-Type', 'application/json')
       .send(payload);
 
