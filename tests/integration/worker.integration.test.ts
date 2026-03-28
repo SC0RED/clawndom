@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
-import { createServer } from 'node:http';
-import type { Server, IncomingMessage, ServerResponse } from 'node:http';
+import { WebSocketServer } from 'ws';
+import type { WebSocket } from 'ws';
 import type { Job } from 'bullmq';
 import type { AddressInfo } from 'node:net';
 
 import type { ProviderConfig } from '../../src/config';
+import { GatewayClient } from '../../src/services/gateway-client';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -18,87 +19,126 @@ vi.mock('ioredis', () => ({
 
 import { processJob } from '../../src/services/worker.service';
 
-function createFakeJob(data: string): Job<string> {
-  return { id: 'integration-job-1', data } as unknown as Job<string>;
+function createFakeJob(data: string, id = 'integration-job-1'): Job<string> {
+  return { id, data } as unknown as Job<string>;
 }
 
-describe('Worker integration', () => {
-  let server: Server;
-  let provider: ProviderConfig;
-  let receivedRequests: Array<{
-    method: string;
-    url: string;
-    headers: Record<string, string | undefined>;
-    body: string;
-  }>;
+const provider: ProviderConfig = {
+  name: 'integration-test',
+  routePath: '/hooks/integration',
+  hmacSecret: 'integration-secret',
+  signatureStrategy: 'websub',
+  openclawHookUrl: 'http://unused',
+};
+
+describe('Worker integration (gateway WS)', () => {
+  let wss: WebSocketServer;
+  let gatewayClient: GatewayClient;
+  let receivedRpcs: Array<{ method: string; params: Record<string, unknown> }>;
 
   beforeAll(async () => {
-    receivedRequests = [];
+    receivedRpcs = [];
 
-    server = createServer((request: IncomingMessage, response: ServerResponse) => {
-      const chunks: Buffer[] = [];
-      request.on('data', (chunk: Buffer) => chunks.push(chunk));
-      request.on('end', () => {
-        receivedRequests.push({
-          method: request.method ?? '',
-          url: request.url ?? '',
-          headers: {
-            'content-type': request.headers['content-type'],
-            authorization: request.headers['authorization'],
-          },
-          body: Buffer.concat(chunks).toString('utf-8'),
-        });
+    wss = new WebSocketServer({ port: 0 });
 
-        response.writeHead(202, { 'Content-Type': 'application/json' });
-        response.end('');
+    wss.on('connection', (ws: WebSocket) => {
+      ws.on('message', (data: Buffer | string) => {
+        const msg = JSON.parse(String(data));
+
+        if (msg.method === 'connect') {
+          ws.send(
+            JSON.stringify({
+              type: 'res',
+              id: msg.id,
+              ok: true,
+              payload: {
+                type: 'hello-ok',
+                protocol: 3,
+                server: { version: 'test', connId: 'ws-test' },
+                features: { methods: ['agent', 'agent.wait'], events: [] },
+                snapshot: { presence: [], health: {}, stateVersion: {}, uptimeMs: 0 },
+                policy: { maxPayload: 1048576, maxBufferedBytes: 1048576, tickIntervalMs: 30000 },
+              },
+            }),
+          );
+          return;
+        }
+
+        receivedRpcs.push({ method: msg.method, params: msg.params });
+
+        if (msg.method === 'agent') {
+          ws.send(
+            JSON.stringify({
+              type: 'res',
+              id: msg.id,
+              ok: true,
+              payload: { runId: `run-${msg.id}`, acceptedAt: new Date().toISOString() },
+            }),
+          );
+        } else if (msg.method === 'agent.wait') {
+          // Simulate a short agent run
+          setTimeout(() => {
+            ws.send(
+              JSON.stringify({
+                type: 'res',
+                id: msg.id,
+                ok: true,
+                payload: {
+                  runId: msg.params.runId,
+                  status: 'ok',
+                  startedAt: new Date().toISOString(),
+                  endedAt: new Date().toISOString(),
+                },
+              }),
+            );
+          }, 50);
+        }
       });
     });
 
-    await new Promise<void>((resolve) => {
-      server.listen(0, '127.0.0.1', resolve);
-    });
-
-    const address = server.address() as AddressInfo;
-
-    provider = {
-      name: 'integration-test',
-      routePath: '/hooks/integration',
-      hmacSecret: 'integration-secret',
-      signatureStrategy: 'websub',
-      openclawHookUrl: `http://127.0.0.1:${address.port}/hooks/integration`,
-    };
+    const address = wss.address() as AddressInfo;
+    gatewayClient = new GatewayClient(`ws://127.0.0.1:${address.port}`, 'test-token');
+    await gatewayClient.connect();
   });
 
   afterEach(() => {
-    receivedRequests = [];
+    receivedRpcs = [];
   });
 
   afterAll(async () => {
+    await gatewayClient.close();
     await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
+      wss.close((error) => (error ? reject(error) : resolve()));
     });
   });
 
-  it('should POST job data to OpenClaw and resolve on 202', async () => {
+  it('should send agent RPC with job data and wait for completion', async () => {
     const payload = '{"event":"updated"}';
 
-    await processJob(createFakeJob(payload), provider);
+    await processJob(createFakeJob(payload), provider, gatewayClient);
 
-    expect(receivedRequests).toHaveLength(1);
-    const [request] = receivedRequests;
-    expect(request.method).toBe('POST');
-    expect(request.url).toBe('/hooks/integration');
-    expect(request.headers['content-type']).toBe('application/json');
-    expect(request.headers['authorization']).toBe('Bearer test-openclaw-token');
-    expect(request.body).toBe(payload);
+    expect(receivedRpcs).toHaveLength(2);
+
+    const [agentCall, waitCall] = receivedRpcs;
+    expect(agentCall.method).toBe('agent');
+    expect(agentCall.params.message).toBe(payload);
+    expect(agentCall.params.name).toBe('integration-test');
+
+    expect(waitCall.method).toBe('agent.wait');
+    expect(waitCall.params.runId).toMatch(/^run-clawndom-/);
   });
 
-  it('should process multiple jobs sequentially', async () => {
-    await processJob(createFakeJob('{"event":"first"}'), provider);
-    await processJob(createFakeJob('{"event":"second"}'), provider);
+  it('should process multiple jobs sequentially with completion tracking', async () => {
+    await processJob(createFakeJob('{"event":"first"}', 'job-1'), provider, gatewayClient);
+    await processJob(createFakeJob('{"event":"second"}', 'job-2'), provider, gatewayClient);
 
-    expect(receivedRequests).toHaveLength(2);
-    expect(receivedRequests[0].body).toBe('{"event":"first"}');
-    expect(receivedRequests[1].body).toBe('{"event":"second"}');
+    // 2 jobs × 2 RPCs each (agent + agent.wait)
+    expect(receivedRpcs).toHaveLength(4);
+    expect(receivedRpcs[0].method).toBe('agent');
+    expect(receivedRpcs[0].params.message).toBe('{"event":"first"}');
+    expect(receivedRpcs[1].method).toBe('agent.wait');
+    expect(receivedRpcs[2].method).toBe('agent');
+    expect(receivedRpcs[2].params.message).toBe('{"event":"second"}');
+    expect(receivedRpcs[3].method).toBe('agent.wait');
   });
 });
