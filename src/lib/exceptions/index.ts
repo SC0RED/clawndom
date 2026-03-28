@@ -1,4 +1,4 @@
-export { registerError, Sc0redError } from './base';
+export { registerError, ClawndomError } from './base';
 export {
   AuthenticationError,
   AuthorizationError,

@@ -3,22 +3,26 @@ import IORedis from 'ioredis';
 
 import { getSettings } from '../config';
 
-const QUEUE_NAME = 'jira-webhooks';
+const queueInstances = new Map<string, Queue>();
 
-let queueInstance: Queue | null = null;
+function buildQueueName(providerName: string): string {
+  return `webhooks:${providerName}`;
+}
 
-export function getQueue(): Queue {
-  if (queueInstance !== null) {
-    return queueInstance;
+export function getProviderQueue(providerName: string): Queue {
+  const existing = queueInstances.get(providerName);
+  if (existing) {
+    return existing;
   }
 
   const settings = getSettings();
   const connection = new IORedis(settings.redisUrl, { maxRetriesPerRequest: null });
+  const queue = new Queue(buildQueueName(providerName), { connection });
 
-  queueInstance = new Queue(QUEUE_NAME, { connection });
-  return queueInstance;
+  queueInstances.set(providerName, queue);
+  return queue;
 }
 
-export function resetQueue(): void {
-  queueInstance = null;
+export function resetQueues(): void {
+  queueInstances.clear();
 }

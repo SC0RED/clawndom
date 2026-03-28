@@ -16,7 +16,7 @@ export const MetricUnit = {
 
 export type MetricUnit = (typeof MetricUnit)[keyof typeof MetricUnit];
 
-const DEFAULT_NAMESPACE = 'Sc0red';
+const DEFAULT_NAMESPACE = 'Clawndom';
 
 export interface Metric {
   name: string;

@@ -1,12 +1,12 @@
 ## Purpose
 
-Defines the structured error handling patterns that every Sc0red service MUST implement for consistent API responses and debugging.
+Defines the structured error handling patterns that clawndom MUST implement for consistent API responses and debugging.
 
 ## Requirements
 
 ### Requirement: Exception Hierarchy
 
-The template MUST provide a base error class (Sc0redError) with:
+The template MUST provide a base error class (ClawndomError) with:
 - Error code (machine-readable string, e.g., "VALIDATION_ERROR")
 - HTTP status code mapping
 - Context dictionary for debugging information

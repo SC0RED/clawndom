@@ -1,21 +1,47 @@
 import { z } from 'zod';
 
+const providerSchema = z.object({
+  name: z.string().min(1),
+  routePath: z.string().min(1),
+  hmacSecret: z.string().min(1),
+  signatureStrategy: z.enum(['websub', 'github']),
+  openclawHookUrl: z.string().url(),
+});
+
+export type ProviderConfig = z.infer<typeof providerSchema>;
+
 const settingsSchema = z.object({
   nodeEnv: z.enum(['local', 'development', 'testing', 'demo', 'production']).default('development'),
   port: z.coerce.number().default(8792),
   serviceName: z.string().default('clawndom'),
-  version: z.string().default('0.1.0'),
+  version: z.string().default('0.2.0'),
   logLevel: z.enum(['debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   logFormat: z.enum(['json', 'human']).default('json'),
-  jiraHmacSecret: z.string().min(1),
   openclawToken: z.string().min(1),
-  openclawHookUrl: z.string().default('http://127.0.0.1:18789/hooks/jira'),
+  openclawGatewayWsUrl: z.string().default('ws://127.0.0.1:18789'),
   redisUrl: z.string().default('redis://127.0.0.1:6379'),
+  maxConcurrentRuns: z.coerce.number().min(1).default(1),
+  agentWaitTimeoutMs: z.coerce.number().min(0).default(1_800_000),
+  providers: z
+    .array(providerSchema)
+    .min(1, 'At least one provider must be configured in PROVIDERS_CONFIG'),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;
 
 let cachedSettings: Settings | null = null;
+
+function parseProviders(): ProviderConfig[] {
+  const raw = process.env.PROVIDERS_CONFIG;
+  if (!raw) {
+    return [];
+  }
+  try {
+    return JSON.parse(raw) as ProviderConfig[];
+  } catch {
+    throw new Error('PROVIDERS_CONFIG is not valid JSON');
+  }
+}
 
 export function getSettings(): Settings {
   if (cachedSettings !== null) {
@@ -28,10 +54,12 @@ export function getSettings(): Settings {
     version: process.env.npm_package_version,
     logLevel: process.env.LOG_LEVEL,
     logFormat: process.env.LOG_FORMAT,
-    jiraHmacSecret: process.env.JIRA_HMAC_SECRET,
     openclawToken: process.env.OPENCLAW_TOKEN,
-    openclawHookUrl: process.env.OPENCLAW_HOOK_URL,
+    openclawGatewayWsUrl: process.env.OPENCLAW_GATEWAY_WS_URL,
     redisUrl: process.env.REDIS_URL,
+    maxConcurrentRuns: process.env.MAX_CONCURRENT_RUNS,
+    agentWaitTimeoutMs: process.env.AGENT_WAIT_TIMEOUT_MS,
+    providers: parseProviders(),
   });
   return cachedSettings;
 }

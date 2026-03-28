@@ -1,53 +1,36 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Request, Response } from 'express';
 
-import { getSettings } from '../config';
-import { getQueue } from '../services/queue.service';
+import type { ProviderConfig } from '../config';
+import { getProviderQueue } from '../services/queue.service';
+import { getSignatureStrategy } from '../strategies/signature';
 import { getLogger } from '../lib/logging';
 
 const logger = getLogger('webhook-controller');
 
-function validateSignature(rawBody: Buffer, signatureHeader: string, secret: string): boolean {
-  const expectedPrefix = 'sha256=';
-  if (!signatureHeader.startsWith(expectedPrefix)) {
-    return false;
-  }
+export function createWebhookHandler(provider: ProviderConfig) {
+  const strategy = getSignatureStrategy(provider.signatureStrategy);
 
-  const receivedHex = signatureHeader.slice(expectedPrefix.length);
-  const computedHex = createHmac('sha256', secret).update(rawBody).digest('hex');
+  return async (request: Request, response: Response): Promise<void> => {
+    const signatureHeader = request.headers[strategy.headerName];
 
-  const receivedBuffer = Buffer.from(receivedHex, 'hex');
-  const computedBuffer = Buffer.from(computedHex, 'hex');
+    if (typeof signatureHeader !== 'string') {
+      logger.warn({ provider: provider.name }, `Missing ${strategy.headerName} header`);
+      response.status(401).json({ error: 'Missing signature' });
+      return;
+    }
 
-  if (receivedBuffer.length !== computedBuffer.length) {
-    return false;
-  }
+    const rawBody = request.body as Buffer;
 
-  return timingSafeEqual(receivedBuffer, computedBuffer);
-}
+    if (!strategy.validate(rawBody, signatureHeader, provider.hmacSecret)) {
+      logger.warn({ provider: provider.name }, 'Invalid HMAC signature');
+      response.status(401).json({ error: 'Invalid signature' });
+      return;
+    }
 
-export async function receiveWebhook(request: Request, response: Response): Promise<void> {
-  const settings = getSettings();
-  // Jira Cloud sends X-Hub-Signature (WebSub format), not X-Hub-Signature-256 (GitHub format)
-  const signatureHeader = request.headers['x-hub-signature'];
+    const queue = getProviderQueue(provider.name);
+    await queue.add('webhook-event', rawBody.toString('utf-8'));
 
-  if (typeof signatureHeader !== 'string') {
-    logger.warn('Missing X-Hub-Signature header');
-    response.status(401).json({ error: 'Missing signature' });
-    return;
-  }
-
-  const rawBody = request.body as Buffer;
-
-  if (!validateSignature(rawBody, signatureHeader, settings.jiraHmacSecret)) {
-    logger.warn('Invalid HMAC signature');
-    response.status(401).json({ error: 'Invalid signature' });
-    return;
-  }
-
-  const queue = getQueue();
-  await queue.add('jira-event', rawBody.toString('utf-8'));
-
-  logger.info('Webhook accepted and enqueued');
-  response.status(202).json({ accepted: true });
+    logger.info({ provider: provider.name }, 'Webhook accepted and enqueued');
+    response.status(202).json({ accepted: true });
+  };
 }

@@ -1,6 +1,6 @@
 import type { Response } from 'express';
 
-import { Sc0redError } from './base';
+import { ClawndomError } from './base';
 
 interface ErrorResponseBody {
   type: string;
@@ -12,7 +12,7 @@ interface ErrorResponseBody {
 }
 
 export function createErrorResponse(
-  exception: Sc0redError,
+  exception: ClawndomError,
   response: Response,
   options?: {
     includeContext?: boolean;
@@ -22,7 +22,7 @@ export function createErrorResponse(
   const includeContext = options?.includeContext ?? true;
 
   const body: ErrorResponseBody = {
-    type: `https://sc0red.ai/errors/${exception.errorCode}`,
+    type: `https://errors.clawndom.dev/${exception.errorCode}`,
     title: formatErrorTitle(exception.errorCode),
     status: exception.httpStatus,
     detail: exception.message,
@@ -55,9 +55,9 @@ function formatErrorTitle(errorCode: string): string {
 }
 
 export function getHttpStatusForErrorCode(errorCode: string): number {
-  const errorClass = Sc0redError.getByErrorCode(errorCode);
+  const errorClass = ClawndomError.getByErrorCode(errorCode);
   if (errorClass) {
-    return (errorClass as unknown as typeof Sc0redError).httpStatus;
+    return (errorClass as unknown as typeof ClawndomError).httpStatus;
   }
   return 500;
 }

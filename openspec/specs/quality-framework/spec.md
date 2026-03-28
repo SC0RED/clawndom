@@ -1,6 +1,6 @@
 ## Purpose
 
-Defines the quality standards, principles, and enforcement requirements that all Sc0red template repositories MUST implement. This spec is language-agnostic — it describes WHAT must exist, not HOW it's implemented.
+Defines the quality standards, principles, and enforcement requirements that clawndom MUST implement. This spec is language-agnostic — it describes WHAT must exist, not HOW it's implemented.
 
 ## Requirements
 

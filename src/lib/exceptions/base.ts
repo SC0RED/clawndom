@@ -1,15 +1,15 @@
 /**
- * Base exception classes for Sc0red services.
+ * Base exception classes for clawndom.
  *
  * Uses Template Method Pattern and Registry Pattern for
  * structured, type-safe error handling.
  */
 
-type Sc0redErrorClass = new (...args: never[]) => Sc0redError;
+type ClawndomErrorClass = new (...args: never[]) => ClawndomError;
 
-const errorRegistry = new Map<string, Sc0redErrorClass>();
+const errorRegistry = new Map<string, ClawndomErrorClass>();
 
-export abstract class Sc0redError extends Error {
+export abstract class ClawndomError extends Error {
   static readonly errorCode: string;
   static readonly httpStatus: number;
 
@@ -22,7 +22,7 @@ export abstract class Sc0redError extends Error {
     this.name = this.constructor.name;
     this.context = options?.context ?? {};
 
-    const ctor = this.constructor as typeof Sc0redError;
+    const ctor = this.constructor as typeof ClawndomError;
     this.errorCode = ctor.errorCode;
     this.httpStatus = ctor.httpStatus;
   }
@@ -45,7 +45,7 @@ export abstract class Sc0redError extends Error {
     };
   }
 
-  static getByErrorCode(errorCode: string): Sc0redErrorClass | undefined {
+  static getByErrorCode(errorCode: string): ClawndomErrorClass | undefined {
     return errorRegistry.get(errorCode);
   }
 
@@ -57,8 +57,8 @@ export abstract class Sc0redError extends Error {
   }
 }
 
-export function registerError<T extends Sc0redErrorClass>(errorClass: T): T {
-  const code = (errorClass as unknown as typeof Sc0redError).errorCode;
+export function registerError<T extends ClawndomErrorClass>(errorClass: T): T {
+  const code = (errorClass as unknown as typeof ClawndomError).errorCode;
   errorRegistry.set(code, errorClass);
   return errorClass;
 }

@@ -1,6 +1,6 @@
 ## Purpose
 
-Defines the API design standards for all Sc0red services to ensure consistent, predictable API contracts across the platform.
+Defines the API design standards for clawndom to ensure consistent, predictable API contracts across the platform.
 
 ## Requirements
 

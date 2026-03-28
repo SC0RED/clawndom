@@ -13,7 +13,7 @@ function createTestApp(handler: express.RequestHandler): express.Express {
 }
 
 describe('Error Handler Middleware', () => {
-  it('should return RFC 7807 format for Sc0redError', async () => {
+  it('should return RFC 7807 format for ClawndomError', async () => {
     const app = createTestApp((_req, _res) => {
       throw new ValidationError('Bad input', { field: 'email' });
     });

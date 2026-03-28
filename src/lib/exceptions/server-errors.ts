@@ -1,6 +1,6 @@
-import { registerError, Sc0redError } from './base';
+import { registerError, ClawndomError } from './base';
 
-export class ServerError extends Sc0redError {
+export class ServerError extends ClawndomError {
   static override readonly errorCode: string = 'SERVER_ERROR';
   static override readonly httpStatus: number = 500;
 }

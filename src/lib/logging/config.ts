@@ -20,7 +20,7 @@ export type LogFormat = (typeof LogFormat)[keyof typeof LogFormat];
 const loggingConfigSchema = z.object({
   logLevel: z.enum(['debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   logFormat: z.enum(['json', 'human']).default('json'),
-  serviceName: z.string().default('sc0red'),
+  serviceName: z.string().default('clawndom'),
   includeTimestamp: z.boolean().default(true),
   includeLocation: z.boolean().default(true),
 });

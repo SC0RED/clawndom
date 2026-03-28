@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Job } from 'bullmq';
 
+import type { ProviderConfig } from '../../src/config';
+
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
     on: vi.fn(),
@@ -12,6 +14,14 @@ vi.mock('ioredis', () => ({
 }));
 
 import { processJob } from '../../src/services/worker.service';
+
+const testProvider: ProviderConfig = {
+  name: 'test-provider',
+  routePath: '/hooks/test',
+  hmacSecret: 'test-hmac-secret',
+  signatureStrategy: 'websub',
+  openclawHookUrl: 'http://127.0.0.1:18789/hooks/test',
+};
 
 function createFakeJob(data: string): Job<string> {
   return { id: 'test-job-1', data } as unknown as Job<string>;
@@ -34,7 +44,9 @@ describe('processJob', () => {
       status: 200,
     });
 
-    await expect(processJob(createFakeJob('{"event":"issue_updated"}'))).resolves.toBeUndefined();
+    await expect(
+      processJob(createFakeJob('{"event":"updated"}'), testProvider),
+    ).resolves.toBeUndefined();
   });
 
   it('should resolve when fetch returns 202', async () => {
@@ -43,7 +55,9 @@ describe('processJob', () => {
       status: 202,
     });
 
-    await expect(processJob(createFakeJob('{"event":"issue_created"}'))).resolves.toBeUndefined();
+    await expect(
+      processJob(createFakeJob('{"event":"created"}'), testProvider),
+    ).resolves.toBeUndefined();
   });
 
   it('should throw when OpenClaw returns 500', async () => {
@@ -53,7 +67,9 @@ describe('processJob', () => {
       text: vi.fn().mockResolvedValue('Internal Server Error'),
     });
 
-    await expect(processJob(createFakeJob('{}'))).rejects.toThrow('OpenClaw returned 500');
+    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
+      'OpenClaw returned 500',
+    );
   });
 
   it('should throw when OpenClaw returns 400', async () => {
@@ -63,20 +79,22 @@ describe('processJob', () => {
       text: vi.fn().mockResolvedValue('Bad Request'),
     });
 
-    await expect(processJob(createFakeJob('{}'))).rejects.toThrow('OpenClaw returned 400');
+    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
+      'OpenClaw returned 400',
+    );
   });
 
   it('should propagate network errors', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
 
-    await expect(processJob(createFakeJob('{}'))).rejects.toThrow('ECONNREFUSED');
+    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow('ECONNREFUSED');
   });
 
   it('should send correct headers', async () => {
     const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     globalThis.fetch = mockFetch;
 
-    await processJob(createFakeJob('{}'));
+    await processJob(createFakeJob('{}'), testProvider);
 
     expect(mockFetch).toHaveBeenCalledWith(
       expect.any(String),
@@ -89,21 +107,21 @@ describe('processJob', () => {
     );
   });
 
-  it('should use openclawHookUrl from config', async () => {
+  it('should use provider openclawHookUrl', async () => {
     const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     globalThis.fetch = mockFetch;
 
-    await processJob(createFakeJob('{}'));
+    await processJob(createFakeJob('{}'), testProvider);
 
-    expect(mockFetch).toHaveBeenCalledWith('http://127.0.0.1:18789/hooks/jira', expect.any(Object));
+    expect(mockFetch).toHaveBeenCalledWith('http://127.0.0.1:18789/hooks/test', expect.any(Object));
   });
 
   it('should send job data as request body', async () => {
     const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     globalThis.fetch = mockFetch;
-    const payload = '{"webhookEvent":"jira:issue_updated","issue_event_type_name":"issue_generic"}';
+    const payload = '{"event":"updated","type":"generic"}';
 
-    await processJob(createFakeJob(payload));
+    await processJob(createFakeJob(payload), testProvider);
 
     expect(mockFetch).toHaveBeenCalledWith(
       expect.any(String),

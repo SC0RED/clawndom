@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
-import { Sc0redError, registerError } from '../../../src/lib/exceptions/base';
+import { ClawndomError, registerError } from '../../../src/lib/exceptions/base';
 import { ValidationError, NotFoundError } from '../../../src/lib/exceptions/client-errors';
 
-describe('Sc0redError', () => {
+describe('ClawndomError', () => {
   it('should look up error by code', () => {
-    const ErrorClass = Sc0redError.getByErrorCode('VALIDATION_ERROR');
+    const ErrorClass = ClawndomError.getByErrorCode('VALIDATION_ERROR');
     expect(ErrorClass).toBeDefined();
   });
 

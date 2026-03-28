@@ -9,8 +9,10 @@ async function startServer(): Promise<void> {
   const logger = getLogger('server');
   const settings = getSettings();
 
-  createWorker();
-  logger.info('BullMQ worker started');
+  for (const provider of settings.providers) {
+    createWorker(provider);
+  }
+  logger.info({ providers: settings.providers.map((p) => p.name) }, 'Workers started');
 
   const app = createApp();
   const port = settings.port;

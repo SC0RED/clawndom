@@ -1,6 +1,6 @@
 ## Purpose
 
-Defines the logging, metrics, and health check capabilities that every Sc0red service MUST provide for production observability.
+Defines the logging, metrics, and health check capabilities that clawndom MUST provide for production observability.
 
 ## Requirements
 

@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest
 import { createServer } from 'node:http';
 import type { Server, IncomingMessage, ServerResponse } from 'node:http';
 import type { Job } from 'bullmq';
+import type { AddressInfo } from 'node:net';
+
+import type { ProviderConfig } from '../../src/config';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -21,6 +24,7 @@ function createFakeJob(data: string): Job<string> {
 
 describe('Worker integration', () => {
   let server: Server;
+  let provider: ProviderConfig;
   let receivedRequests: Array<{
     method: string;
     url: string;
@@ -51,8 +55,18 @@ describe('Worker integration', () => {
     });
 
     await new Promise<void>((resolve) => {
-      server.listen(18789, '127.0.0.1', resolve);
+      server.listen(0, '127.0.0.1', resolve);
     });
+
+    const address = server.address() as AddressInfo;
+
+    provider = {
+      name: 'integration-test',
+      routePath: '/hooks/integration',
+      hmacSecret: 'integration-secret',
+      signatureStrategy: 'websub',
+      openclawHookUrl: `http://127.0.0.1:${address.port}/hooks/integration`,
+    };
   });
 
   afterEach(() => {
@@ -66,22 +80,22 @@ describe('Worker integration', () => {
   });
 
   it('should POST job data to OpenClaw and resolve on 202', async () => {
-    const payload = '{"webhookEvent":"jira:issue_updated"}';
+    const payload = '{"event":"updated"}';
 
-    await processJob(createFakeJob(payload));
+    await processJob(createFakeJob(payload), provider);
 
     expect(receivedRequests).toHaveLength(1);
     const [request] = receivedRequests;
     expect(request.method).toBe('POST');
-    expect(request.url).toBe('/hooks/jira');
+    expect(request.url).toBe('/hooks/integration');
     expect(request.headers['content-type']).toBe('application/json');
     expect(request.headers['authorization']).toBe('Bearer test-openclaw-token');
     expect(request.body).toBe(payload);
   });
 
   it('should process multiple jobs sequentially', async () => {
-    await processJob(createFakeJob('{"event":"first"}'));
-    await processJob(createFakeJob('{"event":"second"}'));
+    await processJob(createFakeJob('{"event":"first"}'), provider);
+    await processJob(createFakeJob('{"event":"second"}'), provider);
 
     expect(receivedRequests).toHaveLength(2);
     expect(receivedRequests[0].body).toBe('{"event":"first"}');

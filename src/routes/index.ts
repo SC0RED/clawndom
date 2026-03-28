@@ -1,13 +1,20 @@
 import express from 'express';
 import type { Express } from 'express';
 
+import { getSettings } from '../config';
 import { createHealthRoutes } from './health.routes';
-import { createWebhookRoutes } from './webhook.routes';
+import { createWebhookHandler } from '../controllers/webhook.controller';
 
 export function registerRoutes(app: Express): void {
-  // Health endpoint: accessible at both /api/health (direct) and /hooks/jira/api/health (via Tailscale Funnel)
   app.use('/api/health', createHealthRoutes());
-  // Webhook endpoint: Tailscale Funnel strips the /hooks/jira prefix before forwarding,
-  // so the proxy receives POST / — mount at root to match.
-  app.use('/', express.raw({ type: 'application/json', limit: '10mb' }), createWebhookRoutes());
+
+  const settings = getSettings();
+
+  for (const provider of settings.providers) {
+    app.post(
+      provider.routePath,
+      express.raw({ type: 'application/json', limit: '10mb' }),
+      createWebhookHandler(provider),
+    );
+  }
 }

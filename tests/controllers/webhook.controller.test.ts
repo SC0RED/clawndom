@@ -5,7 +5,7 @@ import supertest from 'supertest';
 import { createApp } from '../../src/app';
 
 vi.mock('../../src/services/queue.service', () => ({
-  getQueue: vi.fn(() => ({
+  getProviderQueue: vi.fn(() => ({
     add: vi.fn().mockResolvedValue(undefined),
   })),
 }));
@@ -18,7 +18,7 @@ function computeSignature(body: string, secret: string): string {
 describe('Webhook Controller', () => {
   const app = createApp();
   const secret = 'test-hmac-secret';
-  const payload = JSON.stringify({ webhookEvent: 'jira:issue_updated' });
+  const payload = JSON.stringify({ event: 'test_event' });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -28,7 +28,7 @@ describe('Webhook Controller', () => {
     const signature = computeSignature(payload, secret);
 
     const response = await supertest(app)
-      .post('/')
+      .post('/hooks/test')
       .set('Content-Type', 'application/json')
       .set('X-Hub-Signature', signature)
       .send(payload);
@@ -39,7 +39,7 @@ describe('Webhook Controller', () => {
 
   it('should return 401 for invalid HMAC signature', async () => {
     const response = await supertest(app)
-      .post('/')
+      .post('/hooks/test')
       .set('Content-Type', 'application/json')
       .set(
         'X-Hub-Signature',
@@ -53,7 +53,7 @@ describe('Webhook Controller', () => {
 
   it('should return 401 for signature with wrong prefix', async () => {
     const response = await supertest(app)
-      .post('/')
+      .post('/hooks/test')
       .set('Content-Type', 'application/json')
       .set('X-Hub-Signature', 'md5=abc123')
       .send(payload);
@@ -64,7 +64,7 @@ describe('Webhook Controller', () => {
 
   it('should return 401 for signature with wrong length', async () => {
     const response = await supertest(app)
-      .post('/')
+      .post('/hooks/test')
       .set('Content-Type', 'application/json')
       .set('X-Hub-Signature', 'sha256=abcd')
       .send(payload);
@@ -75,7 +75,7 @@ describe('Webhook Controller', () => {
 
   it('should return 401 when signature header is missing', async () => {
     const response = await supertest(app)
-      .post('/')
+      .post('/hooks/test')
       .set('Content-Type', 'application/json')
       .send(payload);
 

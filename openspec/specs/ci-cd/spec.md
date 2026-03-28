@@ -1,6 +1,6 @@
 ## Purpose
 
-Defines the continuous integration and deployment pipeline that every Sc0red template repository MUST implement.
+Defines the continuous integration and deployment pipeline that clawndom MUST implement.
 
 ## Requirements
 
