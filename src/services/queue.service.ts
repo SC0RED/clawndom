@@ -6,7 +6,7 @@ import { getSettings } from '../config';
 const queueInstances = new Map<string, Queue>();
 
 function buildQueueName(providerName: string): string {
-  return `webhooks:${providerName}`;
+  return `webhooks-${providerName}`;
 }
 
 export function getProviderQueue(providerName: string): Queue {

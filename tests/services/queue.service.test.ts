@@ -22,7 +22,7 @@ describe('Queue Service', () => {
   it('should create queue with correct provider name', async () => {
     const { getProviderQueue } = await import('../../src/services/queue.service');
     const queue = getProviderQueue('github');
-    expect(queue.name).toBe('webhooks:github');
+    expect(queue.name).toBe('webhooks-github');
   });
 
   it('should return same queue instance for same provider', async () => {
@@ -37,7 +37,7 @@ describe('Queue Service', () => {
     const github = getProviderQueue('github');
     const jira = getProviderQueue('jira');
     expect(github).not.toBe(jira);
-    expect(github.name).toBe('webhooks:github');
-    expect(jira.name).toBe('webhooks:jira');
+    expect(github.name).toBe('webhooks-github');
+    expect(jira.name).toBe('webhooks-jira');
   });
 });

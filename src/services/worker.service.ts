@@ -10,7 +10,7 @@ import { getLogger } from '../lib/logging';
 const logger = getLogger('worker');
 
 function buildQueueName(providerName: string): string {
-  return `webhooks:${providerName}`;
+  return `webhooks-${providerName}`;
 }
 
 export async function processJob(
