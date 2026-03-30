@@ -1,3 +1,4 @@
+import path from 'path';
 import { Worker, Queue } from 'bullmq';
 import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
@@ -169,6 +170,7 @@ export async function processJob(
     sessionsFilePath: settings.sessionsFilePath,
     sessionKey: fileSessionKey,
     timeoutMs: settings.agentWaitTimeoutMs,
+    transcriptDir: settings.sessionsFilePath ? path.dirname(settings.sessionsFilePath) : undefined,
     signal,
   });
 
