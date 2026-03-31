@@ -9,6 +9,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { dirname } from 'node:path';
 import { getLogger } from '../lib/logging/logger.js';
 import { getSettings } from '../config.js';
 
@@ -65,9 +66,20 @@ export async function sendToSession(params: SendToSessionParams): Promise<SendTo
 
   logger.debug({ sessionKey: key, idempotencyKey }, 'Calling openclaw gateway sessions.send');
 
-  const { stdout } = await execFileAsync('openclaw', args, {
+  // Resolve full path to openclaw binary — launchd agents run with a stripped PATH
+  const openclawBin =
+    process.env.OPENCLAW_BIN_PATH ?? '/Volumes/SSD/nvm/versions/node/v24.5.0/bin/openclaw';
+
+  // When running under launchd, PATH is stripped — node won't be found for
+  // the openclaw shebang. Prepend the bin dir so `env node` resolves correctly.
+  const openclawBinDir = dirname(openclawBin);
+  const subPath = [openclawBinDir, process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin']
+    .filter(Boolean)
+    .join(':');
+
+  const { stdout } = await execFileAsync(openclawBin, args, {
     timeout: timeoutMs + 5_000, // give the subprocess a bit more than the gateway timeout
-    env: { ...process.env, OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: '1' },
+    env: { ...process.env, PATH: subPath, OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: '1' },
   });
 
   const result = JSON.parse(stdout.trim()) as SendToSessionResult;
