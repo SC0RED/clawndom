@@ -148,9 +148,7 @@ export async function processJob(
   );
 
   await sendToSession({
-    gatewayWsUrl: settings.openclawGatewayWsUrl,
-    token: settings.openclawToken,
-    sessionKey: targetSessionKey,
+    key: targetSessionKey,
     message,
     idempotencyKey: `clawndom:${provider.name}:${traceId}`,
     timeoutMs: 30_000,

@@ -1,166 +1,76 @@
 /**
- * Minimal OpenClaw Gateway WebSocket client.
+ * gateway-client.service.ts
  *
- * Connects to the local gateway, authenticates via the connect handshake,
- * calls a single method, and disconnects cleanly. Intended for fire-and-forget
- * one-shot operations from the worker (e.g. sessions.send).
+ * Delivers messages to an agent session via the OpenClaw gateway using the
+ * `openclaw gateway call sessions.send` CLI subprocess. This delegates all
+ * auth complexity (device identity, token, challenge-response) to the
+ * installed openclaw CLI, which already has the right credentials loaded.
  */
-import { randomUUID } from 'crypto';
-import { WebSocket } from 'ws';
-import { getLogger } from '../lib/logging';
+
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { getLogger } from '../lib/logging/logger.js';
+import { getSettings } from '../config.js';
+
+const execFileAsync = promisify(execFile);
+
+export interface SendToSessionParams {
+  /** Target session key, e.g. "agent:patch:main" */
+  key: string;
+  /** Message content to deliver */
+  message: string;
+  /** Optional idempotency key */
+  idempotencyKey?: string;
+  /** Timeout in ms (default: 10000) */
+  timeoutMs?: number;
+}
+
+export interface SendToSessionResult {
+  runId?: string;
+  status?: string;
+  messageSeq?: number;
+}
 
 const logger = getLogger('gateway-client');
 
-const PROTOCOL_VERSION = 3;
-const CLIENT_ID = 'clawndom';
-const CLIENT_MODE = 'operator';
-const CLIENT_VERSION = '1.0.0';
-
-/** Wire-format frames (subset we use). */
-interface RequestFrame {
-  type: 'req';
-  id: string;
-  method: string;
-  params: Record<string, unknown>;
-}
-
-interface ResponseFrame {
-  type: 'res';
-  id: string;
-  ok: boolean;
-  payload?: unknown;
-  error?: { code: number; message: string };
-}
-
-type Frame = RequestFrame | ResponseFrame | { type: string; [k: string]: unknown };
-
 /**
- * Connect to the OpenClaw gateway WS, authenticate, call `sessions.send`,
- * then disconnect.
+ * Delivers a message to an agent session via `openclaw gateway call sessions.send`.
+ * The openclaw CLI handles device identity, token auth, and WS handshake.
  */
-export async function sendToSession(opts: {
-  /** WebSocket URL, e.g. `ws://127.0.0.1:18789`. */
-  gatewayWsUrl: string;
-  /** Bearer token from OPENCLAW_TOKEN env / plist. */
-  token: string;
-  /** Full session key, e.g. `agent:patch:main`. */
-  sessionKey: string;
-  /** Rendered message to inject. */
-  message: string;
-  /** Optional idempotency key for deduplication. */
-  idempotencyKey?: string;
-  /** Connection + call timeout in ms. Default: 30_000. */
-  timeoutMs?: number;
-}): Promise<void> {
-  const { gatewayWsUrl, token, sessionKey, message, idempotencyKey, timeoutMs = 30_000 } = opts;
+export async function sendToSession(params: SendToSessionParams): Promise<SendToSessionResult> {
+  const settings = getSettings();
+  const { key, message, idempotencyKey, timeoutMs = 15_000 } = params;
 
-  return new Promise<void>((resolve, reject) => {
-    const ws = new WebSocket(gatewayWsUrl, { handshakeTimeout: 10_000 });
-    const pending = new Map<string, (frame: ResponseFrame) => void>();
-    let settled = false;
+  const callParams: Record<string, unknown> = { key, message };
+  if (idempotencyKey) callParams.idempotencyKey = idempotencyKey;
 
-    const timeoutHandle = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        ws.terminate();
-        reject(new Error(`Gateway WS call timed out after ${timeoutMs}ms`));
-      }
-    }, timeoutMs);
+  const args = [
+    'gateway',
+    'call',
+    'sessions.send',
+    '--json',
+    '--timeout',
+    String(timeoutMs),
+    '--params',
+    JSON.stringify(callParams),
+  ];
 
-    function done(err?: Error): void {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutHandle);
-      ws.close();
-      if (err) reject(err);
-      else resolve();
-    }
+  // Optionally override gateway URL and token from settings
+  if (settings.openclawGatewayWsUrl) {
+    args.push('--url', settings.openclawGatewayWsUrl);
+  }
+  if (settings.openclawToken) {
+    args.push('--token', settings.openclawToken);
+  }
 
-    function send(frame: RequestFrame): void {
-      ws.send(JSON.stringify(frame));
-    }
+  logger.debug({ sessionKey: key, idempotencyKey }, 'Calling openclaw gateway sessions.send');
 
-    function call(method: string, params: Record<string, unknown>): Promise<ResponseFrame> {
-      return new Promise((res) => {
-        const id = randomUUID();
-        pending.set(id, res);
-        send({ type: 'req', id, method, params });
-      });
-    }
-
-    ws.on('error', (err) => done(new Error(`Gateway WS error: ${err.message}`)));
-
-    ws.on('close', (code) => {
-      if (!settled) done(new Error(`Gateway WS closed unexpectedly (code ${code})`));
-    });
-
-    ws.on('message', async (raw) => {
-      let frame: Frame;
-      try {
-        frame = JSON.parse(raw.toString()) as Frame;
-      } catch {
-        done(new Error('Gateway WS: received non-JSON frame'));
-        return;
-      }
-
-      // Route response frames to pending resolvers
-      if (frame.type === 'res' && typeof (frame as ResponseFrame).id === 'string') {
-        const res = frame as ResponseFrame;
-        const resolver = pending.get(res.id);
-        if (resolver) {
-          pending.delete(res.id);
-          resolver(res);
-        }
-        return;
-      }
-      // Ignore event frames (tick, presence, etc.)
-    });
-
-    ws.on('open', async () => {
-      try {
-        // Step 1: connect handshake
-        const connectRes = await call('connect', {
-          minProtocol: PROTOCOL_VERSION,
-          maxProtocol: PROTOCOL_VERSION,
-          client: {
-            id: CLIENT_ID,
-            mode: CLIENT_MODE,
-            version: CLIENT_VERSION,
-          },
-          auth: { token },
-        });
-
-        if (!connectRes.ok) {
-          done(
-            new Error(
-              `Gateway connect failed: ${connectRes.error?.message ?? JSON.stringify(connectRes.error)}`,
-            ),
-          );
-          return;
-        }
-
-        logger.debug({ sessionKey }, 'Gateway connected — sending sessions.send');
-
-        // Step 2: sessions.send
-        const sendParams: Record<string, unknown> = { key: sessionKey, message };
-        if (idempotencyKey) sendParams.idempotencyKey = idempotencyKey;
-
-        const sendRes = await call('sessions.send', sendParams);
-
-        if (!sendRes.ok) {
-          done(
-            new Error(
-              `sessions.send failed: ${sendRes.error?.message ?? JSON.stringify(sendRes.error)}`,
-            ),
-          );
-          return;
-        }
-
-        logger.debug({ sessionKey }, 'sessions.send acknowledged');
-        done();
-      } catch (err) {
-        done(err instanceof Error ? err : new Error(String(err)));
-      }
-    });
+  const { stdout } = await execFileAsync('openclaw', args, {
+    timeout: timeoutMs + 5_000, // give the subprocess a bit more than the gateway timeout
+    env: { ...process.env, OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: '1' },
   });
+
+  const result = JSON.parse(stdout.trim()) as SendToSessionResult;
+  logger.debug({ sessionKey: key, result }, 'Gateway sessions.send acknowledged');
+  return result;
 }

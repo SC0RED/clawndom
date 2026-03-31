@@ -1,24 +1,41 @@
 /**
- * End-to-end integration test: webhook HTTP → HMAC → BullMQ → worker → gateway WS sessions.send
+ * End-to-end integration test: webhook HTTP → HMAC → BullMQ → worker → gateway (sendToSession)
  *
- * Mocked: OpenClaw gateway (WebSocket server accepting sessions.send calls)
+ * Mocked: gateway-client.service (sendToSession) — captures deliveries synchronously, no WS or subprocess
  * Real: Express app, HMAC validation, BullMQ queue + worker
  *
  * Simulates webhook payloads from Jira, GitHub, and Linear hitting HTTP endpoints
- * and verifies the full chain through to gateway WS delivery.
+ * and verifies the full chain through to gateway delivery.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { createServer } from 'node:http';
-import type { Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
-import { WebSocketServer } from 'ws';
-import type { WebSocket } from 'ws';
 import request from 'supertest';
 
 import { vi } from 'vitest';
 import { resetSettings } from '../../src/config';
 import { resetQueues } from '../../src/services/queue.service';
+
+// -- Delivery capture --
+interface DeliveredPayload {
+  message: string;
+  sessionKey: string;
+  idempotencyKey?: string;
+  receivedAt: string;
+}
+
+/**
+ * Per-test deliveries array. Reset in beforeEach so each test sees only its own deliveries.
+ * The mock implementation is rebuilt in beforeEach to close over the current array reference.
+ */
+let testDeliveries: DeliveredPayload[] = [];
+
+const { mockSendToSession } = vi.hoisted(() => ({
+  mockSendToSession: vi.fn(),
+}));
+
+vi.mock('../../src/services/gateway-client.service', () => ({
+  sendToSession: mockSendToSession,
+}));
 
 // -- Secrets --
 const JIRA_SECRET = 'jira-test-hmac-secret-1234';
@@ -51,7 +68,7 @@ const TEST_PROVIDERS = [
 ];
 
 // -- Sample payloads --
-// Each call gets a unique nonce so content-hash dedup never skips within a suite run
+// Unique nonce per call defeats content-hash dedup across tests in the same suite run
 let _nonceCounter = 0;
 function nonce(): number {
   return Date.now() * 1000 + ++_nonceCounter;
@@ -121,77 +138,7 @@ function signGitHub(payload: string, secret: string): string {
   return `sha256=${createHmac('sha256', secret).update(payload).digest('hex')}`;
 }
 
-// -- Mock Gateway (WebSocket sessions.send) --
-interface DeliveredPayload {
-  /** The sessions.send `message` field. */
-  message: string;
-  /** The sessions.send `key` field. */
-  sessionKey: string;
-  idempotencyKey?: string;
-  receivedAt: string;
-}
-
-function createMockGateway(token = 'e2e-test-token'): {
-  httpServer: Server;
-  wss: WebSocketServer;
-  deliveries: DeliveredPayload[];
-  getPort: () => number;
-} {
-  const deliveries: DeliveredPayload[] = [];
-  const httpServer = createServer();
-  const wss = new WebSocketServer({ server: httpServer });
-
-  wss.on('connection', (ws: WebSocket) => {
-    ws.on('message', (raw) => {
-      const frame = JSON.parse(raw.toString()) as {
-        type: string;
-        id: string;
-        method: string;
-        params: Record<string, unknown>;
-      };
-
-      if (frame.method === 'connect') {
-        const authToken = (frame.params.auth as { token?: string })?.token;
-        if (authToken !== token) {
-          ws.send(
-            JSON.stringify({ type: 'res', id: frame.id, ok: false, error: { code: 401, message: 'unauthorized' } }),
-          );
-          return;
-        }
-        ws.send(JSON.stringify({ type: 'res', id: frame.id, ok: true, payload: {} }));
-        return;
-      }
-
-      if (frame.method === 'sessions.send') {
-        const p = frame.params as { key: string; message: string; idempotencyKey?: string };
-        const delivery: DeliveredPayload = {
-          message: p.message,
-          sessionKey: p.key,
-          idempotencyKey: p.idempotencyKey,
-          receivedAt: new Date().toISOString(),
-        };
-        deliveries.push(delivery);
-        ws.send(JSON.stringify({ type: 'res', id: frame.id, ok: true, payload: {} }));
-        return;
-      }
-
-      ws.send(
-        JSON.stringify({ type: 'res', id: frame.id, ok: false, error: { code: 404, message: `unknown: ${frame.method}` } }),
-      );
-    });
-  });
-
-  httpServer.listen(0);
-
-  return {
-    httpServer,
-    wss,
-    deliveries,
-    getPort: () => (httpServer.address() as AddressInfo).port,
-  };
-}
-
-// -- Helpers --
+// -- Polling helper --
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -199,33 +146,30 @@ function sleep(ms: number): Promise<void> {
 async function waitForDeliveries(
   deliveries: DeliveredPayload[],
   count: number,
-  timeoutMs: number = 5000,
+  timeoutMs = 8000,
 ): Promise<void> {
   const start = Date.now();
   while (deliveries.length < count) {
     if (Date.now() - start > timeoutMs) {
       throw new Error(`Timed out waiting for ${count} deliveries (got ${deliveries.length})`);
     }
-    await sleep(100);
+    await sleep(50);
   }
 }
 
 // -- Test suite --
-describe('E2E: webhook → queue → gateway WS delivery', () => {
-  let gateway: ReturnType<typeof createMockGateway>;
+describe('E2E: webhook → queue → gateway delivery (sendToSession mock)', () => {
   let app: import('express').Express;
   let workers: Array<import('bullmq').Worker>;
 
   beforeAll(async () => {
-    gateway = createMockGateway('e2e-test-token');
-
     process.env.OPENCLAW_TOKEN = 'e2e-test-token';
-    process.env.OPENCLAW_GATEWAY_WS_URL = `ws://127.0.0.1:${gateway.getPort()}`;
+    process.env.OPENCLAW_AGENT_ID = 'patch';
     process.env.PROVIDERS_CONFIG = JSON.stringify(TEST_PROVIDERS);
     resetSettings();
     resetQueues();
 
-    // Flush stale completed/failed jobs from previous runs so content-hash dedup works
+    // Flush stale jobs from previous runs to prevent content-hash dedup false positives
     const { Queue } = await import('bullmq');
     const IORedis = (await import('ioredis')).default;
     const flushConn = new IORedis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', {
@@ -249,26 +193,39 @@ describe('E2E: webhook → queue → gateway WS delivery', () => {
 
     const { createWorker } = await import('../../src/services/worker.service');
     const { getSettings } = await import('../../src/config');
-
     const settings = getSettings();
     workers = settings.providers.map((p) => createWorker(p));
 
-    // Wait for workers to fully connect and drain any stale jobs before tests run
-    await sleep(2000);
-    gateway.deliveries.length = 0;
+    // Allow workers to start and drain any background jobs
+    await sleep(500);
+    testDeliveries.length = 0;
+    mockSendToSession.mockClear();
   });
 
   beforeEach(async () => {
+    // Re-apply env vars and reset settings AFTER global beforeEach (which calls resetSettings())
     process.env.OPENCLAW_TOKEN = 'e2e-test-token';
-    process.env.OPENCLAW_GATEWAY_WS_URL = `ws://127.0.0.1:${gateway.getPort()}`;
     process.env.OPENCLAW_AGENT_ID = 'patch';
     process.env.PROVIDERS_CONFIG = JSON.stringify(TEST_PROVIDERS);
-    // Re-initialize settings AFTER setting env vars (global beforeEach resets them first)
     const { resetSettings: rs } = await import('../../src/config');
     rs();
-    gateway.deliveries.length = 0;
 
-    // Remove completed/failed jobs between tests so content-hash dedup doesn't skip re-enqueues
+    // Fresh per-test delivery array — closes over by the mock implementation
+    testDeliveries = [];
+    mockSendToSession.mockReset();
+    mockSendToSession.mockImplementation(
+      (params: { key: string; message: string; idempotencyKey?: string }) => {
+        testDeliveries.push({
+          message: params.message,
+          sessionKey: params.key,
+          idempotencyKey: params.idempotencyKey,
+          receivedAt: new Date().toISOString(),
+        });
+        return Promise.resolve({ runId: 'mock-run', status: 'started' });
+      },
+    );
+
+    // Flush queue to prevent dedup collisions between tests; wait for drain to settle
     const { Queue } = await import('bullmq');
     const IORedis = (await import('ioredis')).default;
     const conn = new IORedis(process.env.REDIS_URL ?? 'redis://127.0.0.1:6379', {
@@ -276,7 +233,6 @@ describe('E2E: webhook → queue → gateway WS delivery', () => {
     });
     for (const p of TEST_PROVIDERS) {
       const q = new Queue(`webhooks-${p.name}`, { connection: conn });
-      // Drain all job states (waiting, delayed, completed, failed) to prevent dedup skips
       await q.drain(true);
       const completed = await q.getCompleted(0, 1000);
       const failed = await q.getFailed(0, 1000);
@@ -287,17 +243,25 @@ describe('E2E: webhook → queue → gateway WS delivery', () => {
       await q.close();
     }
     await conn.quit();
-    // Brief wait for workers to catch up after queue drain
-    await sleep(200);
+    // Wait for any in-flight worker callbacks from prior tests to fire and be discarded
+    await sleep(1000);
+    testDeliveries = [];
+    mockSendToSession.mockReset();
+    mockSendToSession.mockImplementation(
+      (params: { key: string; message: string; idempotencyKey?: string }) => {
+        testDeliveries.push({
+          message: params.message,
+          sessionKey: params.key,
+          idempotencyKey: params.idempotencyKey,
+          receivedAt: new Date().toISOString(),
+        });
+        return Promise.resolve({ runId: 'mock-run', status: 'started' });
+      },
+    );
   });
 
   afterAll(async () => {
     if (workers) await Promise.all(workers.map((w) => w.close()));
-    gateway.wss.close();
-    await new Promise<void>((resolve, reject) => {
-      gateway.httpServer.close((err) => (err ? reject(err) : resolve()));
-    });
-    delete process.env.OPENCLAW_GATEWAY_WS_URL;
     resetSettings();
     resetQueues();
   });
@@ -315,10 +279,10 @@ describe('E2E: webhook → queue → gateway WS delivery', () => {
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ accepted: true });
 
-    await waitForDeliveries(gateway.deliveries, 1, 10000);
+    await waitForDeliveries(testDeliveries, 1, 8000);
 
-    expect(gateway.deliveries).toHaveLength(1);
-    const [delivery] = gateway.deliveries;
+    expect(testDeliveries).toHaveLength(1);
+    const [delivery] = testDeliveries;
     expect(delivery.sessionKey).toBe('agent:patch:main');
 
     const forwarded = JSON.parse(delivery.message);
@@ -338,9 +302,9 @@ describe('E2E: webhook → queue → gateway WS delivery', () => {
 
     expect(res.status).toBe(202);
 
-    await waitForDeliveries(gateway.deliveries, 1, 5000);
+    await waitForDeliveries(testDeliveries, 1, 5000);
 
-    const forwarded = JSON.parse(gateway.deliveries[0].message);
+    const forwarded = JSON.parse(testDeliveries[0].message);
     expect(forwarded.action).toBe('submitted');
     expect(forwarded.pull_request.number).toBe(1053);
     expect(forwarded.repository.full_name).toBe('SC0RED/Platform-Frontend');
@@ -358,9 +322,9 @@ describe('E2E: webhook → queue → gateway WS delivery', () => {
 
     expect(res.status).toBe(202);
 
-    await waitForDeliveries(gateway.deliveries, 1, 5000);
+    await waitForDeliveries(testDeliveries, 1, 5000);
 
-    const forwarded = JSON.parse(gateway.deliveries[0].message);
+    const forwarded = JSON.parse(testDeliveries[0].message);
     expect(forwarded.data.identifier).toBe('ENG-42');
   });
 
@@ -378,7 +342,7 @@ describe('E2E: webhook → queue → gateway WS delivery', () => {
     expect(res.body).toEqual({ error: 'Invalid signature' });
 
     await sleep(200);
-    expect(gateway.deliveries).toHaveLength(0);
+    expect(testDeliveries).toHaveLength(0);
   });
 
   it('should reject a webhook with missing signature header', async () => {
@@ -404,7 +368,7 @@ describe('E2E: webhook → queue → gateway WS delivery', () => {
 
   // --- Multi-provider ---
 
-  it('should process webhooks from multiple providers', { timeout: 15_000 }, async () => {
+  it('should process webhooks from multiple providers', { timeout: 30_000 }, async () => {
     const jiraPayload = makeJiraPayload();
     const githubPayload = makeGithubPayload();
     const linearPayload = makeLinearPayload();
@@ -431,8 +395,8 @@ describe('E2E: webhook → queue → gateway WS delivery', () => {
     expect(githubRes.status).toBe(202);
     expect(linearRes.status).toBe(202);
 
-    await waitForDeliveries(gateway.deliveries, 3, 10000);
-    expect(gateway.deliveries).toHaveLength(3);
+    await waitForDeliveries(testDeliveries, 3, 20000);
+    expect(testDeliveries).toHaveLength(3);
   });
 
   // --- Serialization ---
@@ -457,13 +421,16 @@ describe('E2E: webhook → queue → gateway WS delivery', () => {
     expect(res1.status).toBe(202);
     expect(res2.status).toBe(202);
 
-    await waitForDeliveries(gateway.deliveries, 2, 10000);
-    expect(gateway.deliveries).toHaveLength(2);
+    await waitForDeliveries(testDeliveries, 2, 8000);
 
-    // Verify ordering — second delivery happened after first
-    const [first, second] = gateway.deliveries;
-    expect(new Date(first.receivedAt).getTime()).toBeLessThanOrEqual(
-      new Date(second.receivedAt).getTime(),
-    );
+    expect(testDeliveries).toHaveLength(2);
+    const keys1 = JSON.parse(testDeliveries[0].message).issue.key;
+    const keys2 = JSON.parse(testDeliveries[1].message).issue.key;
+    expect([keys1, keys2].sort()).toEqual(['SPE-1567', 'SPE-1593']);
+
+    // Verify sequential ordering within the same provider queue
+    const t1 = new Date(testDeliveries[0].receivedAt).getTime();
+    const t2 = new Date(testDeliveries[1].receivedAt).getTime();
+    expect(t1).toBeLessThanOrEqual(t2);
   });
 });

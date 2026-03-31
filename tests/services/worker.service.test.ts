@@ -67,7 +67,7 @@ describe('processJob', () => {
     expect(sendToSession).toHaveBeenCalledOnce();
     expect(sendToSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionKey: 'agent:patch:main',
+        key: 'agent:patch:main',
         message: '{"event":"updated"}',
         idempotencyKey: 'clawndom:test-provider:test-job-1',
       }),
@@ -78,7 +78,7 @@ describe('processJob', () => {
     await processJob(createFakeJob('{"event":"updated"}'), testProvider);
 
     const call = vi.mocked(sendToSession).mock.calls[0][0];
-    expect(call.sessionKey).toBe('agent:patch:main');
+    expect(call.key).toBe('agent:patch:main');
     // No agentId/sessionKey/deliver fields — those were the old HTTP envelope
     expect(call).not.toHaveProperty('agentId');
     expect(call).not.toHaveProperty('deliver');
@@ -124,7 +124,7 @@ describe('processJob', () => {
 
     const call = vi.mocked(sendToSession).mock.calls[0][0];
     // Routes to patch agent
-    expect(call.sessionKey).toBe('agent:patch:main');
+    expect(call.key).toBe('agent:patch:main');
   });
 
   it('should route to default agent when no rules match', async () => {
@@ -150,7 +150,7 @@ describe('processJob', () => {
 
     const call = vi.mocked(sendToSession).mock.calls[0][0];
     // Routes to default agent
-    expect(call.sessionKey).toBe('agent:main:main');
+    expect(call.key).toBe('agent:main:main');
   });
 
   it('should skip forwarding when no routing match and no default', async () => {
@@ -332,7 +332,7 @@ describe('processJob model routing', () => {
 
     // Model is selected (logged) but delivery still goes to main session
     expect(sendToSession).toHaveBeenCalledOnce();
-    expect(vi.mocked(sendToSession).mock.calls[0][0].sessionKey).toBe('agent:patch:main');
+    expect(vi.mocked(sendToSession).mock.calls[0][0].key).toBe('agent:patch:main');
   });
 
   it('should deliver via sendToSession when no model rule matches', async () => {
