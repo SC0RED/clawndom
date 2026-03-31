@@ -33,7 +33,7 @@ interface TranscriptEvent {
 export interface SessionIdleOptions {
   /** Absolute path to sessions.json. */
   readonly sessionsFilePath: string;
-  /** The full session key (e.g. `agent:patch:hook:jira:spe-1234`). */
+  /** The full session key (e.g. `agent:patch:jira:spe-1234`). */
   readonly sessionKey: string;
   /** Directory containing per-session .jsonl transcript files. */
   readonly transcriptDir?: string;

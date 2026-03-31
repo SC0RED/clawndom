@@ -1,4 +1,3 @@
-import path from 'path';
 import { Worker, Queue } from 'bullmq';
 import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
@@ -6,10 +5,11 @@ import IORedis from 'ioredis';
 import type { ProviderConfig, ModelRule } from '../config';
 import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
+import { renderTemplate } from '../lib/template/template-engine';
 import { resolveAgent, resolveFieldPath } from '../strategies/routing';
 import type { AlertRegistry } from './alerts';
 import type { JobAlert } from './alerts';
-import { waitForSessionIdle } from './session-monitor.service';
+import { sendToSession } from './gateway-client.service';
 
 const logger = getLogger('worker');
 
@@ -94,7 +94,7 @@ export function resolveModel(
 export async function processJob(
   job: Job<string>,
   provider: ProviderConfig,
-  signal?: AbortSignal,
+  _signal?: AbortSignal,
 ): Promise<void> {
   const settings = getSettings();
   const envelope = parseEnvelope(job.data);
@@ -116,17 +116,17 @@ export async function processJob(
     parsedPayload = {};
   }
 
-  const agentId = resolveAgent(parsedPayload, provider.routing, settings.openclawAgentId);
-  if (agentId === null) {
+  const resolved = resolveAgent(parsedPayload, provider.routing, settings.openclawAgentId);
+  if (resolved === null) {
     logger.warn(
       { jobId: job.id, provider: provider.name },
       'routing:no-match — skipping forwarding',
     );
     return;
   }
+  const { agentId, messageTemplate: ruleTemplate } = resolved;
 
   const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
-  const sessionKey = `hook:${provider.name}:${traceId}`;
   const selectedModel = resolveModel(parsedPayload, provider.modelRules);
 
   if (selectedModel) {
@@ -136,47 +136,29 @@ export async function processJob(
     );
   }
 
-  const gatewayEnvelope = JSON.stringify({
-    message: envelope.payload,
-    agentId,
-    sessionKey,
-    deliver: false,
-    ...(selectedModel ? { model: selectedModel } : {}),
-  });
+  const template = ruleTemplate ?? provider.messageTemplate;
+  const message = template ? await renderTemplate(template, parsedPayload) : envelope.payload;
 
-  const response = await fetch(settings.openclawHookUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.openclawToken}`,
-    },
-    body: gatewayEnvelope,
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Gateway returned ${response.status}: ${body}`);
-  }
-
-  const result = (await response.json()) as { runId?: string };
-  const fileSessionKey = `agent:${agentId}:${sessionKey}`;
+  // Target the agent's main session — trusted delivery, no security fence.
+  const targetSessionKey = `agent:${agentId}:main`;
 
   logger.info(
-    { jobId: job.id, provider: provider.name, runId: result.runId, fileSessionKey },
-    'Webhook delivered — waiting for session idle',
+    { jobId: job.id, provider: provider.name, targetSessionKey, traceId },
+    'Delivering rendered prompt via sessions.send',
   );
 
-  await waitForSessionIdle({
-    sessionsFilePath: settings.sessionsFilePath,
-    sessionKey: fileSessionKey,
-    timeoutMs: settings.agentWaitTimeoutMs,
-    transcriptDir: settings.sessionsFilePath ? path.dirname(settings.sessionsFilePath) : undefined,
-    signal,
+  await sendToSession({
+    gatewayWsUrl: settings.openclawGatewayWsUrl,
+    token: settings.openclawToken,
+    sessionKey: targetSessionKey,
+    message,
+    idempotencyKey: `clawndom:${provider.name}:${traceId}`,
+    timeoutMs: 30_000,
   });
 
   logger.info(
-    { jobId: job.id, provider: provider.name, runId: result.runId },
-    'Session idle — job complete',
+    { jobId: job.id, provider: provider.name, targetSessionKey },
+    'Prompt delivered to session — job complete',
   );
 }
 
@@ -235,7 +217,7 @@ export function createWorker(
         const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
         const alert: JobAlert = {
           jobId: traceId,
-          sessionKey: `hook:${provider.name}:${traceId}`,
+          sessionKey: `agent:${settings.openclawAgentId}:main`,
           agentId: settings.openclawAgentId,
           error: error.message,
           attempts: envelope.attempt,

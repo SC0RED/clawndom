@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Job } from 'bullmq';
 
 import type { ProviderConfig } from '../../src/config';
@@ -20,14 +20,19 @@ vi.mock('ioredis', () => ({
   default: vi.fn().mockImplementation(() => ({})),
 }));
 
-vi.mock('../../src/services/session-monitor.service', () => ({
-  waitForSessionIdle: vi.fn().mockResolvedValue(undefined),
+vi.mock('../../src/services/gateway-client.service', () => ({
+  sendToSession: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../src/lib/template/template-engine', () => ({
+  renderTemplate: vi.fn().mockResolvedValue('rendered-template-output'),
 }));
 
 import { processJob, parseEnvelope, resolveModel } from '../../src/services/worker.service';
 import type { JobEnvelope } from '../../src/services/worker.service';
 import { resetSettings } from '../../src/config';
-import { waitForSessionIdle } from '../../src/services/session-monitor.service';
+import { sendToSession } from '../../src/services/gateway-client.service';
+import { renderTemplate } from '../../src/lib/template/template-engine';
 
 import type { ModelRule } from '../../src/config';
 
@@ -43,18 +48,7 @@ function createFakeJob(data: string, id = 'test-job-1'): Job<string> {
   return { id, data } as unknown as Job<string>;
 }
 
-function mockFetchOk(runId = 'run-123'): void {
-  globalThis.fetch = vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    text: vi.fn().mockResolvedValue(JSON.stringify({ ok: true, runId })),
-    json: vi.fn().mockResolvedValue({ ok: true, runId }),
-  });
-}
-
 describe('processJob', () => {
-  const originalFetch = globalThis.fetch;
-
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.OPENCLAW_AGENT_ID = 'patch';
@@ -65,85 +59,49 @@ describe('processJob', () => {
     registerRoutingStrategy(defaultStrategy);
   });
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it('should resolve when gateway returns 200 and session goes idle', async () => {
-    mockFetchOk();
-
+  it('should resolve and call sendToSession on success', async () => {
     await expect(
       processJob(createFakeJob('{"event":"updated"}'), testProvider),
     ).resolves.toBeUndefined();
 
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      expect.stringContaining('/hooks/agent'),
+    expect(sendToSession).toHaveBeenCalledOnce();
+    expect(sendToSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          'Content-Type': 'application/json',
-          Authorization: expect.stringMatching(/^Bearer /),
-        }),
-        body: expect.stringContaining('"message":"{\\"event\\":\\"updated\\"}"'),
-      }),
-    );
-
-    expect(waitForSessionIdle).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionKey: expect.stringContaining('agent:'),
+        sessionKey: 'agent:patch:main',
+        message: '{"event":"updated"}',
+        idempotencyKey: 'clawndom:test-provider:test-job-1',
       }),
     );
   });
 
-  it('should include agentId, sessionKey, and deliver in envelope', async () => {
-    mockFetchOk();
-
+  it('should send to the agent main session (no hook session)', async () => {
     await processJob(createFakeJob('{"event":"updated"}'), testProvider);
 
-    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body as string);
-    expect(body).toMatchObject({
-      message: '{"event":"updated"}',
-      agentId: 'patch',
-      sessionKey: 'hook:test-provider:test-job-1',
-      deliver: false,
-    });
+    const call = vi.mocked(sendToSession).mock.calls[0][0];
+    expect(call.sessionKey).toBe('agent:patch:main');
+    // No agentId/sessionKey/deliver fields — those were the old HTTP envelope
+    expect(call).not.toHaveProperty('agentId');
+    expect(call).not.toHaveProperty('deliver');
   });
 
-  it('should throw when gateway returns non-200', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
-      text: vi.fn().mockResolvedValue('Service Unavailable'),
-    });
+  it('should throw when sendToSession rejects', async () => {
+    vi.mocked(sendToSession).mockRejectedValueOnce(new Error('Gateway connect failed'));
 
     await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
-      'Gateway returned 503: Service Unavailable',
+      'Gateway connect failed',
     );
   });
 
-  it('should throw when fetch rejects', async () => {
-    globalThis.fetch = vi.fn().mockRejectedValue(new Error('Connection refused'));
-
-    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
-      'Connection refused',
-    );
-  });
-
-  it('should forward the raw job data as message in the envelope', async () => {
+  it('should forward the raw job data as message', async () => {
     const payload = '{"issue":{"key":"SPE-1567"}}';
-    mockFetchOk();
 
     await processJob(createFakeJob(payload), testProvider);
 
-    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body as string);
-    expect(body.message).toBe(payload);
+    const call = vi.mocked(sendToSession).mock.calls[0][0];
+    expect(call.message).toBe(payload);
   });
 
-  it('should route to agent based on field-equals rule', async () => {
-    mockFetchOk();
-
+  it('should route to correct agent when field-equals rule matches', async () => {
     const providerWithRouting: ProviderConfig = {
       ...testProvider,
       routing: {
@@ -164,14 +122,12 @@ describe('processJob', () => {
       providerWithRouting,
     );
 
-    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body as string);
-    expect(body.agentId).toBe('patch');
+    const call = vi.mocked(sendToSession).mock.calls[0][0];
+    // Routes to patch agent
+    expect(call.sessionKey).toBe('agent:patch:main');
   });
 
-  it('should fall through to routing default when no rules match', async () => {
-    mockFetchOk();
-
+  it('should route to default agent when no rules match', async () => {
     const providerWithRouting: ProviderConfig = {
       ...testProvider,
       routing: {
@@ -192,14 +148,12 @@ describe('processJob', () => {
       providerWithRouting,
     );
 
-    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body as string);
-    expect(body.agentId).toBe('main');
+    const call = vi.mocked(sendToSession).mock.calls[0][0];
+    // Routes to default agent
+    expect(call.sessionKey).toBe('agent:main:main');
   });
 
   it('should skip forwarding when no routing match and no default', async () => {
-    mockFetchOk();
-
     const originalAgentId = process.env.OPENCLAW_AGENT_ID;
     process.env.OPENCLAW_AGENT_ID = '';
     resetSettings();
@@ -220,43 +174,20 @@ describe('processJob', () => {
 
     await processJob(createFakeJob('{"issue":{"fields":{}}}'), providerNoDefault);
 
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-    expect(waitForSessionIdle).not.toHaveBeenCalled();
+    expect(sendToSession).not.toHaveBeenCalled();
 
     process.env.OPENCLAW_AGENT_ID = originalAgentId;
     resetSettings();
   });
 
-  it('should wait for session idle after successful delivery', async () => {
-    mockFetchOk('run-456');
-
+  it('should use idempotencyKey based on provider and traceId', async () => {
     await processJob(createFakeJob('{"event":"test"}'), testProvider);
 
-    expect(waitForSessionIdle).toHaveBeenCalledTimes(1);
-    expect(waitForSessionIdle).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionsFilePath: expect.any(String),
-        sessionKey: 'agent:patch:hook:test-provider:test-job-1',
-      }),
-    );
+    const call = vi.mocked(sendToSession).mock.calls[0][0];
+    expect(call.idempotencyKey).toBe('clawndom:test-provider:test-job-1');
   });
 
-  it('should throw when session monitor times out', async () => {
-    mockFetchOk();
-    vi.mocked(waitForSessionIdle).mockRejectedValueOnce(
-      new Error(
-        'Session monitor timeout: agent:patch:hook:test-provider:test-job-1 did not go idle within 600000ms',
-      ),
-    );
-
-    await expect(processJob(createFakeJob('{}'), testProvider)).rejects.toThrow(
-      'Session monitor timeout',
-    );
-  });
-
-  it('should unwrap envelope and forward original payload', async () => {
-    mockFetchOk();
-
+  it('should use originalJobId in idempotencyKey for re-enqueued jobs', async () => {
     const envelope: JobEnvelope = {
       payload: '{"issue":{"key":"SPE-1234"}}',
       attempt: 2,
@@ -265,11 +196,9 @@ describe('processJob', () => {
 
     await processJob(createFakeJob(JSON.stringify(envelope)), testProvider);
 
-    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body as string);
-    expect(body.message).toBe('{"issue":{"key":"SPE-1234"}}');
-    // sessionKey uses originalJobId for traceability
-    expect(body.sessionKey).toBe('hook:test-provider:original-42');
+    const call = vi.mocked(sendToSession).mock.calls[0][0];
+    expect(call.message).toBe('{"issue":{"key":"SPE-1234"}}');
+    expect(call.idempotencyKey).toBe('clawndom:test-provider:original-42');
   });
 });
 
@@ -374,8 +303,6 @@ describe('resolveModel', () => {
 });
 
 describe('processJob model routing', () => {
-  const originalFetch = globalThis.fetch;
-
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.OPENCLAW_AGENT_ID = 'patch';
@@ -386,13 +313,7 @@ describe('processJob model routing', () => {
     registerRoutingStrategy(defaultStrategy);
   });
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it('should include model in gateway envelope when rule matches', async () => {
-    mockFetchOk();
-
+  it('should still deliver via sendToSession when model rule matches', async () => {
     const providerWithModel: ProviderConfig = {
       ...testProvider,
       modelRules: [
@@ -409,14 +330,12 @@ describe('processJob model routing', () => {
       providerWithModel,
     );
 
-    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body as string);
-    expect(body.model).toBe('anthropic/claude-opus-4-6');
+    // Model is selected (logged) but delivery still goes to main session
+    expect(sendToSession).toHaveBeenCalledOnce();
+    expect(vi.mocked(sendToSession).mock.calls[0][0].sessionKey).toBe('agent:patch:main');
   });
 
-  it('should omit model from gateway envelope when no rule matches', async () => {
-    mockFetchOk();
-
+  it('should deliver via sendToSession when no model rule matches', async () => {
     const providerWithModel: ProviderConfig = {
       ...testProvider,
       modelRules: [
@@ -433,18 +352,75 @@ describe('processJob model routing', () => {
       providerWithModel,
     );
 
-    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body as string);
-    expect(body.model).toBeUndefined();
+    expect(sendToSession).toHaveBeenCalledOnce();
   });
 
-  it('should omit model when provider has no modelRules', async () => {
-    mockFetchOk();
-
+  it('should deliver via sendToSession when provider has no modelRules', async () => {
     await processJob(createFakeJob('{"event":"updated"}'), testProvider);
 
-    const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse(callArgs[1].body as string);
-    expect(body.model).toBeUndefined();
+    expect(sendToSession).toHaveBeenCalledOnce();
+  });
+});
+
+describe('processJob message templates', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.OPENCLAW_AGENT_ID = 'patch';
+    resetSettings();
+    resetRoutingStrategies();
+    registerRoutingStrategy(fieldEqualsStrategy);
+    registerRoutingStrategy(regexStrategy);
+    registerRoutingStrategy(defaultStrategy);
+  });
+
+  it('should use rendered template as message when provider has messageTemplate', async () => {
+    vi.mocked(renderTemplate).mockResolvedValueOnce('rendered provider template');
+
+    const providerWithTemplate: ProviderConfig = {
+      ...testProvider,
+      messageTemplate: 'Issue {{ issue.key }}',
+    };
+
+    await processJob(createFakeJob('{"issue":{"key":"SPE-100"}}'), providerWithTemplate);
+
+    expect(renderTemplate).toHaveBeenCalledWith('Issue {{ issue.key }}', {
+      issue: { key: 'SPE-100' },
+    });
+    const call = vi.mocked(sendToSession).mock.calls[0][0];
+    expect(call.message).toBe('rendered provider template');
+  });
+
+  it('should prefer routing rule messageTemplate over provider messageTemplate', async () => {
+    vi.mocked(renderTemplate).mockResolvedValueOnce('rendered rule template');
+
+    const providerWithBoth: ProviderConfig = {
+      ...testProvider,
+      messageTemplate: 'provider template',
+      routing: {
+        rules: [
+          {
+            strategy: 'field-equals',
+            field: 'type',
+            value: 'bug',
+            agentId: 'patch',
+            messageTemplate: 'rule template {{ type }}',
+          },
+        ],
+      },
+    };
+
+    await processJob(createFakeJob('{"type":"bug"}'), providerWithBoth);
+
+    expect(renderTemplate).toHaveBeenCalledWith('rule template {{ type }}', { type: 'bug' });
+    const call = vi.mocked(sendToSession).mock.calls[0][0];
+    expect(call.message).toBe('rendered rule template');
+  });
+
+  it('should use raw payload when no template is configured', async () => {
+    await processJob(createFakeJob('{"event":"updated"}'), testProvider);
+
+    expect(renderTemplate).not.toHaveBeenCalled();
+    const call = vi.mocked(sendToSession).mock.calls[0][0];
+    expect(call.message).toBe('{"event":"updated"}');
   });
 });

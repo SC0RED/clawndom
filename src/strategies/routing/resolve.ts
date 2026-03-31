@@ -4,6 +4,11 @@ import type { RoutingConfig } from './types';
 
 const logger = getLogger('routing');
 
+export interface ResolvedRoute {
+  agentId: string;
+  messageTemplate?: string;
+}
+
 /**
  * Resolve which agent should receive this webhook payload.
  *
@@ -17,12 +22,12 @@ export function resolveAgent(
   payload: unknown,
   routing: RoutingConfig | undefined,
   globalDefault: string,
-): string | null {
+): ResolvedRoute | null {
   if (!routing || routing.rules.length === 0) {
     if (routing?.default) {
-      return routing.default;
+      return { agentId: routing.default };
     }
-    return globalDefault || null;
+    return globalDefault ? { agentId: globalDefault } : null;
   }
 
   for (const rule of routing.rules) {
@@ -30,18 +35,18 @@ export function resolveAgent(
     const agentId = strategy.evaluate(payload, rule);
     if (agentId !== null) {
       logger.debug({ strategy: rule.strategy, field: rule.field, agentId }, 'Routing rule matched');
-      return agentId;
+      return { agentId, messageTemplate: rule.messageTemplate };
     }
   }
 
   if (routing.default) {
     logger.debug({ agentId: routing.default }, 'Using routing default');
-    return routing.default;
+    return { agentId: routing.default };
   }
 
   if (globalDefault) {
     logger.debug({ agentId: globalDefault }, 'Using global default agent');
-    return globalDefault;
+    return { agentId: globalDefault };
   }
 
   logger.warn('routing:no-match — no routing rules matched and no default configured');

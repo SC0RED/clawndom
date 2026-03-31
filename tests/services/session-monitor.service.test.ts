@@ -46,13 +46,13 @@ describe('session-monitor.service', () => {
   describe('waitForSessionIdle', () => {
     it('resolves immediately when session status is "done"', async () => {
       await writeSessionsFile({
-        'agent:patch:hook:jira:spe-1234': { status: 'done', updatedAt: 100 },
+        'agent:patch:jira:spe-1234': { status: 'done', updatedAt: 100 },
       });
 
       await expect(
         waitForSessionIdle({
           sessionsFilePath: sessionsPath,
-          sessionKey: 'agent:patch:hook:jira:spe-1234',
+          sessionKey: 'agent:patch:jira:spe-1234',
           idleThresholdMs: 100,
           timeoutMs: 5_000,
         }),
@@ -61,13 +61,13 @@ describe('session-monitor.service', () => {
 
     it('resolves immediately when session status is "failed"', async () => {
       await writeSessionsFile({
-        'agent:patch:hook:jira:spe-1234': { status: 'failed', updatedAt: 100 },
+        'agent:patch:jira:spe-1234': { status: 'failed', updatedAt: 100 },
       });
 
       await expect(
         waitForSessionIdle({
           sessionsFilePath: sessionsPath,
-          sessionKey: 'agent:patch:hook:jira:spe-1234',
+          sessionKey: 'agent:patch:jira:spe-1234',
           idleThresholdMs: 100,
           timeoutMs: 5_000,
         }),
@@ -77,12 +77,12 @@ describe('session-monitor.service', () => {
     it('resolves after updatedAt stops changing for idleThresholdMs', async () => {
       const now = Date.now();
       await writeSessionsFile({
-        'agent:patch:hook:jira:spe-1234': { updatedAt: now },
+        'agent:patch:jira:spe-1234': { updatedAt: now },
       });
 
       const promise = waitForSessionIdle({
         sessionsFilePath: sessionsPath,
-        sessionKey: 'agent:patch:hook:jira:spe-1234',
+        sessionKey: 'agent:patch:jira:spe-1234',
         idleThresholdMs: 3_000,
         timeoutMs: 15_000,
       });
@@ -90,7 +90,7 @@ describe('session-monitor.service', () => {
       // Simulate activity for 2 seconds, then stop.
       await new Promise((r) => setTimeout(r, 1_000));
       await writeSessionsFile({
-        'agent:patch:hook:jira:spe-1234': { updatedAt: now + 1_000 },
+        'agent:patch:jira:spe-1234': { updatedAt: now + 1_000 },
       });
 
       // The idle threshold is 3s — after we stop writing, it should resolve
@@ -106,7 +106,7 @@ describe('session-monitor.service', () => {
       const interval = setInterval(async () => {
         counter++;
         await writeSessionsFile({
-          'agent:patch:hook:jira:spe-active': { updatedAt: now + counter * 1_000 },
+          'agent:patch:jira:spe-active': { updatedAt: now + counter * 1_000 },
         }).catch(() => {
           // Ignore write errors after cleanup
         });
@@ -116,7 +116,7 @@ describe('session-monitor.service', () => {
         await expect(
           waitForSessionIdle({
             sessionsFilePath: sessionsPath,
-            sessionKey: 'agent:patch:hook:jira:spe-active',
+            sessionKey: 'agent:patch:jira:spe-active',
             idleThresholdMs: 10_000,
             timeoutMs: 3_000,
           }),
@@ -128,14 +128,14 @@ describe('session-monitor.service', () => {
 
     it('rejects when abort signal is fired', async () => {
       await writeSessionsFile({
-        'agent:patch:hook:jira:spe-abort': { updatedAt: Date.now() },
+        'agent:patch:jira:spe-abort': { updatedAt: Date.now() },
       });
 
       const controller = new AbortController();
 
       const promise = waitForSessionIdle({
         sessionsFilePath: sessionsPath,
-        sessionKey: 'agent:patch:hook:jira:spe-abort',
+        sessionKey: 'agent:patch:jira:spe-abort',
         idleThresholdMs: 60_000,
         timeoutMs: 60_000,
         signal: controller.signal,
@@ -151,7 +151,7 @@ describe('session-monitor.service', () => {
       // File does not exist initially.
       const promise = waitForSessionIdle({
         sessionsFilePath: join(tempDir, 'nonexistent.json'),
-        sessionKey: 'agent:patch:hook:jira:spe-missing',
+        sessionKey: 'agent:patch:jira:spe-missing',
         idleThresholdMs: 1_000,
         timeoutMs: 4_000,
       });
@@ -164,7 +164,7 @@ describe('session-monitor.service', () => {
 
       const promise = waitForSessionIdle({
         sessionsFilePath: sessionsPath,
-        sessionKey: 'agent:patch:hook:jira:spe-bad-json',
+        sessionKey: 'agent:patch:jira:spe-bad-json',
         idleThresholdMs: 1_000,
         timeoutMs: 3_000,
       });
@@ -174,12 +174,12 @@ describe('session-monitor.service', () => {
 
     it('resolves when session transitions from running to done mid-poll', async () => {
       await writeSessionsFile({
-        'agent:patch:hook:jira:spe-transition': { status: 'running', updatedAt: Date.now() },
+        'agent:patch:jira:spe-transition': { status: 'running', updatedAt: Date.now() },
       });
 
       const promise = waitForSessionIdle({
         sessionsFilePath: sessionsPath,
-        sessionKey: 'agent:patch:hook:jira:spe-transition',
+        sessionKey: 'agent:patch:jira:spe-transition',
         idleThresholdMs: 30_000,
         timeoutMs: 10_000,
       });
@@ -187,7 +187,7 @@ describe('session-monitor.service', () => {
       // Transition to done after a short delay.
       setTimeout(async () => {
         await writeSessionsFile({
-          'agent:patch:hook:jira:spe-transition': { status: 'done', updatedAt: Date.now() },
+          'agent:patch:jira:spe-transition': { status: 'done', updatedAt: Date.now() },
         });
       }, 1_500);
 
@@ -199,7 +199,7 @@ describe('session-monitor.service', () => {
       const now = Date.now();
 
       await writeSessionsFile({
-        'agent:patch:hook:jira:spe-thinking': {
+        'agent:patch:jira:spe-thinking': {
           sessionId,
           updatedAt: now,
         },
@@ -214,7 +214,7 @@ describe('session-monitor.service', () => {
 
       const promise = waitForSessionIdle({
         sessionsFilePath: sessionsPath,
-        sessionKey: 'agent:patch:hook:jira:spe-thinking',
+        sessionKey: 'agent:patch:jira:spe-thinking',
         transcriptDir,
         idleThresholdMs: 1_000,
         timeoutMs: 5_000,
@@ -238,7 +238,7 @@ describe('session-monitor.service', () => {
       const now = Date.now();
 
       await writeSessionsFile({
-        'agent:patch:hook:jira:spe-idle': {
+        'agent:patch:jira:spe-idle': {
           sessionId,
           updatedAt: now,
         },
@@ -253,7 +253,7 @@ describe('session-monitor.service', () => {
       await expect(
         waitForSessionIdle({
           sessionsFilePath: sessionsPath,
-          sessionKey: 'agent:patch:hook:jira:spe-idle',
+          sessionKey: 'agent:patch:jira:spe-idle',
           transcriptDir,
           idleThresholdMs: 2_000,
           timeoutMs: 10_000,
@@ -265,7 +265,7 @@ describe('session-monitor.service', () => {
       const now = Date.now();
 
       await writeSessionsFile({
-        'agent:patch:hook:jira:spe-no-transcript': {
+        'agent:patch:jira:spe-no-transcript': {
           sessionId: 'sess-missing-001',
           updatedAt: now,
         },
@@ -275,7 +275,7 @@ describe('session-monitor.service', () => {
       await expect(
         waitForSessionIdle({
           sessionsFilePath: sessionsPath,
-          sessionKey: 'agent:patch:hook:jira:spe-no-transcript',
+          sessionKey: 'agent:patch:jira:spe-no-transcript',
           transcriptDir,
           idleThresholdMs: 2_000,
           timeoutMs: 10_000,
@@ -287,7 +287,7 @@ describe('session-monitor.service', () => {
       const now = Date.now();
 
       await writeSessionsFile({
-        'agent:patch:hook:jira:spe-no-dir': {
+        'agent:patch:jira:spe-no-dir': {
           sessionId: 'sess-nodir-001',
           updatedAt: now,
         },
@@ -296,7 +296,7 @@ describe('session-monitor.service', () => {
       await expect(
         waitForSessionIdle({
           sessionsFilePath: sessionsPath,
-          sessionKey: 'agent:patch:hook:jira:spe-no-dir',
+          sessionKey: 'agent:patch:jira:spe-no-dir',
           idleThresholdMs: 2_000,
           timeoutMs: 10_000,
         }),

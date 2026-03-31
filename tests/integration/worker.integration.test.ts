@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import { createServer } from 'node:http';
-import type { Server, IncomingMessage, ServerResponse } from 'node:http';
+import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Job } from 'bullmq';
+import { WebSocketServer } from 'ws';
+import type { WebSocket } from 'ws';
 
 import type { ProviderConfig } from '../../src/config';
 import { resetSettings } from '../../src/config';
@@ -15,10 +17,6 @@ vi.mock('bullmq', () => ({
 
 vi.mock('ioredis', () => ({
   default: vi.fn().mockImplementation(() => ({})),
-}));
-
-vi.mock('../../src/services/session-monitor.service', () => ({
-  waitForSessionIdle: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { processJob } from '../../src/services/worker.service';
@@ -35,65 +33,125 @@ const provider: ProviderConfig = {
   openclawHookUrl: 'http://unused',
 };
 
-describe('Worker integration (gateway HTTP)', () => {
-  let mockGateway: Server;
-  let receivedBodies: string[];
-  let runCounter: number;
+/**
+ * Minimal mock WebSocket gateway: accepts the connect handshake, then
+ * acknowledges sessions.send calls and records the params.
+ */
+function createMockGateway(token: string): {
+  server: Server;
+  wss: WebSocketServer;
+  receivedSends: Array<{ key: string; message: string; idempotencyKey?: string }>;
+} {
+  const receivedSends: Array<{ key: string; message: string; idempotencyKey?: string }> = [];
+  const httpServer = createServer();
+  const wss = new WebSocketServer({ server: httpServer });
+
+  wss.on('connection', (ws: WebSocket) => {
+    ws.on('message', (raw) => {
+      const frame = JSON.parse(raw.toString()) as {
+        type: string;
+        id: string;
+        method: string;
+        params: Record<string, unknown>;
+      };
+
+      if (frame.method === 'connect') {
+        const authToken = (frame.params.auth as { token?: string })?.token;
+        if (authToken !== token) {
+          ws.send(
+            JSON.stringify({
+              type: 'res',
+              id: frame.id,
+              ok: false,
+              error: { code: 401, message: 'unauthorized' },
+            }),
+          );
+          return;
+        }
+        ws.send(JSON.stringify({ type: 'res', id: frame.id, ok: true, payload: {} }));
+        return;
+      }
+
+      if (frame.method === 'sessions.send') {
+        const p = frame.params as { key: string; message: string; idempotencyKey?: string };
+        receivedSends.push({ key: p.key, message: p.message, idempotencyKey: p.idempotencyKey });
+        ws.send(JSON.stringify({ type: 'res', id: frame.id, ok: true, payload: {} }));
+        return;
+      }
+
+      // Unknown method
+      ws.send(
+        JSON.stringify({
+          type: 'res',
+          id: frame.id,
+          ok: false,
+          error: { code: 404, message: `unknown method: ${frame.method}` },
+        }),
+      );
+    });
+  });
+
+  return { server: httpServer, wss, receivedSends };
+}
+
+describe('Worker integration (gateway WS sessions.send)', () => {
+  const TEST_TOKEN = 'integration-test-token';
+  let httpServer: Server;
+  let wss: WebSocketServer;
+  let receivedSends: Array<{ key: string; message: string; idempotencyKey?: string }>;
 
   beforeAll(() => {
-    receivedBodies = [];
-    runCounter = 0;
+    const mock = createMockGateway(TEST_TOKEN);
+    httpServer = mock.server;
+    wss = mock.wss;
+    receivedSends = mock.receivedSends;
 
-    mockGateway = createServer((req: IncomingMessage, res: ServerResponse) => {
-      if (req.method === 'POST' && req.url === '/hooks/agent') {
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
-        req.on('end', () => {
-          receivedBodies.push(Buffer.concat(chunks).toString());
-          runCounter++;
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, runId: `run-${runCounter}` }));
-        });
-      } else {
-        res.writeHead(404);
-        res.end();
-      }
-    });
+    httpServer.listen(0);
+    const port = (httpServer.address() as AddressInfo).port;
 
-    mockGateway.listen(0);
-    const port = (mockGateway.address() as AddressInfo).port;
-    process.env.OPENCLAW_HOOK_URL = `http://127.0.0.1:${port}/hooks/agent`;
+    process.env.OPENCLAW_GATEWAY_WS_URL = `ws://127.0.0.1:${port}`;
+    process.env.OPENCLAW_TOKEN = TEST_TOKEN;
     process.env.OPENCLAW_AGENT_ID = 'patch';
     resetSettings();
   });
 
   afterEach(() => {
-    receivedBodies = [];
-    runCounter = 0;
+    receivedSends.length = 0;
   });
 
   afterAll(async () => {
+    wss.close();
     await new Promise<void>((resolve, reject) => {
-      mockGateway.close((error) => (error ? reject(error) : resolve()));
+      httpServer.close((error) => (error ? reject(error) : resolve()));
     });
+    delete process.env.OPENCLAW_GATEWAY_WS_URL;
+    delete process.env.OPENCLAW_TOKEN;
+    delete process.env.OPENCLAW_AGENT_ID;
+    resetSettings();
   });
 
-  it('should POST job data to gateway and resolve on 200', async () => {
+  it('should deliver job message to agent main session via sessions.send', async () => {
     const payload = '{"event":"updated"}';
 
     await processJob(createFakeJob(payload), provider);
 
-    expect(receivedBodies).toHaveLength(1);
-    const envelope = JSON.parse(receivedBodies[0]);
-    expect(envelope.message).toBe(payload);
+    expect(receivedSends).toHaveLength(1);
+    expect(receivedSends[0].key).toBe('agent:patch:main');
+    expect(receivedSends[0].message).toBe(payload);
+  });
+
+  it('should include idempotencyKey in sessions.send call', async () => {
+    await processJob(createFakeJob('{"event":"updated"}', 'job-xyz'), provider);
+
+    expect(receivedSends[0].idempotencyKey).toBe('clawndom:integration-test:job-xyz');
   });
 
   it('should process multiple jobs sequentially', async () => {
     await processJob(createFakeJob('{"event":"first"}', 'job-1'), provider);
     await processJob(createFakeJob('{"event":"second"}', 'job-2'), provider);
 
-    expect(receivedBodies).toHaveLength(2);
-    expect(JSON.parse(receivedBodies[0]).message).toBe('{"event":"first"}');
-    expect(JSON.parse(receivedBodies[1]).message).toBe('{"event":"second"}');
+    expect(receivedSends).toHaveLength(2);
+    expect(receivedSends[0].message).toBe('{"event":"first"}');
+    expect(receivedSends[1].message).toBe('{"event":"second"}');
   });
 });
