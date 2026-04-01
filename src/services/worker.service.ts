@@ -148,7 +148,8 @@ export async function processJob(
       message,
       sessionKey,
       agentId,
-      model: selectedModel,
+      // Note: model overrides not authorized for external callers.
+      // Patch's agent config handles model selection (Opus primary → Sonnet → Haiku).
     },
     settings.agentWaitTimeoutMs,
   );

@@ -8,4 +8,5 @@ export default defineConfig({
   sourcemap: true,
   splitting: false,
   bundle: true,
+  external: ['openclaw'],
 });

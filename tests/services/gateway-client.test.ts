@@ -21,9 +21,17 @@ describe('GatewayClient', () => {
   let client: GatewayClient;
   let serverSocket: WsSocket | null = null;
 
-  /** Handle the connect handshake on the server side */
+  /** Send the connect.challenge and handle the connect handshake on the server side */
   function autoHandleConnect(socket: WsSocket): void {
     serverSocket = socket;
+    // Gateway sends challenge first
+    socket.send(
+      JSON.stringify({
+        type: 'event',
+        event: 'connect.challenge',
+        payload: { nonce: 'test-nonce', ts: Date.now() },
+      }),
+    );
     socket.once('message', (data) => {
       const msg = JSON.parse(String(data));
       if (msg.method === 'connect') {
@@ -32,7 +40,7 @@ describe('GatewayClient', () => {
             type: 'res',
             id: msg.id,
             ok: true,
-            payload: { protocol: 3 },
+            payload: { type: 'hello-ok', protocol: 3 },
           }),
         );
       }
@@ -62,6 +70,13 @@ describe('GatewayClient', () => {
   it('should reject connection when server rejects', async () => {
     wss.on('connection', (socket) => {
       serverSocket = socket;
+      socket.send(
+        JSON.stringify({
+          type: 'event',
+          event: 'connect.challenge',
+          payload: { nonce: 'n', ts: Date.now() },
+        }),
+      );
       socket.once('message', (data) => {
         const msg = JSON.parse(String(data));
         socket.send(
@@ -391,13 +406,8 @@ describe('GatewayClient', () => {
   it('should handle unparseable message during connect handshake', async () => {
     wss.on('connection', (socket) => {
       serverSocket = socket;
-      socket.once('message', (data) => {
-        const msg = JSON.parse(String(data));
-        if (msg.method === 'connect') {
-          // Send garbage instead of a valid response
-          socket.send('not json');
-        }
-      });
+      // Send garbage instead of the challenge event
+      socket.send('not json at all{{{');
     });
 
     client = new GatewayClient(`ws://127.0.0.1:${port}`, 'test-token');
