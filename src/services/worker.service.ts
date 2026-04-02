@@ -6,6 +6,8 @@ import type { ProviderConfig, ModelRule } from '../config';
 import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
 import { renderTemplate } from '../lib/template/template-engine';
+import { extractWebhookContext } from '../strategies/context';
+import { getDedupRedis } from './dedup.service';
 import { resolveAgent, resolveFieldPath } from '../strategies/routing';
 import type { AlertRegistry } from './alerts';
 import type { JobAlert } from './alerts';
@@ -113,6 +115,19 @@ export async function processJob(
     parsedPayload = {};
   }
 
+  const webhookContext = extractWebhookContext(provider.name, parsedPayload);
+  logger.info(
+    {
+      jobId: job.id,
+      provider: provider.name,
+      contextId: webhookContext.id,
+      contextTitle: webhookContext.title,
+      contextStatus: webhookContext.status,
+      contextSource: webhookContext.source,
+    },
+    'Webhook context',
+  );
+
   const resolved = resolveAgent(parsedPayload, provider.routing, settings.openclawAgentId);
   if (resolved === null) {
     logger.warn(
@@ -122,6 +137,15 @@ export async function processJob(
     return;
   }
   const { agentId, messageTemplate: ruleTemplate } = resolved;
+
+  // Extract template filename for logging
+  const templateMatch = ruleTemplate?.match(/jira-[^.]+\.md/);
+  const templateName = templateMatch ? templateMatch[0] : (ruleTemplate ?? 'default');
+
+  logger.info(
+    { jobId: job.id, provider: provider.name, template: templateName, agentId },
+    'Routing matched',
+  );
 
   const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
   const selectedModel = resolveModel(parsedPayload, provider.modelRules);
@@ -160,6 +184,12 @@ export async function processJob(
 
   if (result.status === 'timeout') {
     throw new Error(`Agent run timed out (runId: ${result.runId})`);
+  }
+
+  // Clear dedup key so the same ticket+status can be re-triggered if needed
+  if (webhookContext.id !== '?') {
+    const dedupKey = `clawndom:dedup:${provider.name}:${webhookContext.id}:${webhookContext.status}`;
+    await getDedupRedis().del(dedupKey);
   }
 
   logger.info(
