@@ -5,8 +5,9 @@ import { getSettings } from '../config';
 
 const queueInstances = new Map<string, Queue>();
 
-function buildQueueName(providerName: string): string {
-  return `webhooks-${providerName}`;
+export function buildQueueName(providerName: string): string {
+  const prefix = process.env.BULLMQ_QUEUE_PREFIX ?? 'webhooks';
+  return `${prefix}-${providerName}`;
 }
 
 export function getProviderQueue(providerName: string): Queue {
@@ -17,7 +18,9 @@ export function getProviderQueue(providerName: string): Queue {
 
   const settings = getSettings();
   const connection = new IORedis(settings.redisUrl, { maxRetriesPerRequest: null });
-  const queue = new Queue(buildQueueName(providerName), { connection });
+  const queue = new Queue(buildQueueName(providerName), {
+    connection,
+  });
 
   queueInstances.set(providerName, queue);
   return queue;

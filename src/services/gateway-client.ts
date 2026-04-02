@@ -1,4 +1,4 @@
-import { WebSocket } from 'ws';
+import { GatewayClient as SdkGatewayClient } from 'openclaw/plugin-sdk/gateway-runtime';
 import { getLogger } from '../lib/logging';
 
 const logger = getLogger('gateway-client');
@@ -11,177 +11,48 @@ export interface AgentRunResult {
   error?: string;
 }
 
-interface PendingRequest {
-  resolve: (value: unknown) => void;
-  reject: (reason: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
 /**
  * Persistent WebSocket client to the OpenClaw gateway.
- * Handles the connect handshake and exposes `agent` + `agent.wait` RPCs.
+ * Wraps the official SDK GatewayClient which handles device identity,
+ * scope negotiation, reconnection, and the full connect handshake.
  */
 export class GatewayClient {
-  private ws: WebSocket | null = null;
-  private readonly url: string;
-  private readonly token: string;
-  private requestId = 0;
-  private readonly pending = new Map<string, PendingRequest>();
-  private connected = false;
-  private connectPromise: Promise<void> | null = null;
+  private client: SdkGatewayClient;
+  private started = false;
 
   constructor(url: string, token: string) {
-    this.url = url;
-    this.token = token;
+    this.client = new SdkGatewayClient({
+      url,
+      token,
+      clientName: 'gateway-client',
+      clientDisplayName: 'clawndom',
+      clientVersion: '0.2.0',
+      platform: 'node',
+      mode: 'backend',
+      role: 'operator',
+      scopes: ['operator.read', 'operator.write'],
+      // deviceIdentity auto-loaded by SDK via loadOrCreateDeviceIdentity()
+      onEvent: (): void => {}, // ignore events (tick, presence)
+      onHelloOk: (): void => {
+        logger.info('Gateway WS connected');
+      },
+      onConnectError: (err: Error): void => {
+        logger.error({ error: err.message }, 'Gateway WS connect error');
+      },
+      onClose: (_code: number, reason: string): void => {
+        logger.warn({ reason }, 'Gateway WS disconnected');
+      },
+    });
   }
 
   async connect(): Promise<void> {
-    if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
-      return;
+    if (!this.started) {
+      this.client.start();
+      this.started = true;
+      // Give the SDK client time to complete the handshake
+      // The SDK handles reconnection internally
+      await new Promise<void>((resolve) => setTimeout(resolve, 2000));
     }
-
-    if (this.connectPromise) {
-      return this.connectPromise;
-    }
-
-    this.connectPromise = this.doConnect();
-    try {
-      await this.connectPromise;
-    } finally {
-      this.connectPromise = null;
-    }
-  }
-
-  private doConnect(): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      this.ws = new WebSocket(this.url);
-
-      const connectTimeout = setTimeout(() => {
-        this.ws?.close();
-        reject(new Error('Gateway WS connect timeout (10s)'));
-      }, 10_000);
-
-      this.ws.on('open', () => {
-        const connectId = this.nextId();
-        this.ws!.send(
-          JSON.stringify({
-            type: 'req',
-            id: connectId,
-            method: 'connect',
-            params: {
-              minProtocol: 3,
-              maxProtocol: 3,
-              token: this.token,
-              client: {
-                id: 'clawndom',
-                displayName: 'clawndom',
-                version: '0.2.0',
-                platform: 'node',
-                mode: 'cli',
-              },
-            },
-          }),
-        );
-
-        const onFirstMessage = (data: Buffer | string): void => {
-          try {
-            const msg = JSON.parse(String(data));
-            if (msg.type === 'res' && msg.id === connectId) {
-              clearTimeout(connectTimeout);
-              this.ws!.removeListener('message', onFirstMessage);
-
-              if (msg.ok) {
-                this.connected = true;
-                this.ws!.on('message', (d: Buffer | string) => this.handleMessage(d));
-                logger.info('Gateway WS connected');
-                resolve();
-              } else {
-                reject(new Error(`Gateway connect rejected: ${JSON.stringify(msg.error)}`));
-              }
-            }
-          } catch (error) {
-            clearTimeout(connectTimeout);
-            reject(error instanceof Error ? error : new Error(String(error)));
-          }
-        };
-
-        this.ws!.on('message', onFirstMessage);
-      });
-
-      this.ws.on('error', (error) => {
-        clearTimeout(connectTimeout);
-        logger.error({ error: error.message }, 'Gateway WS error');
-        reject(error);
-      });
-
-      this.ws.on('close', () => {
-        this.connected = false;
-        this.rejectAllPending('Gateway WS closed');
-        logger.warn('Gateway WS disconnected');
-      });
-    });
-  }
-
-  private nextId(): string {
-    this.requestId += 1;
-    return `clawndom-${this.requestId}`;
-  }
-
-  private handleMessage(data: Buffer | string): void {
-    try {
-      const msg = JSON.parse(String(data));
-      if (msg.type === 'res' && typeof msg.id === 'string') {
-        const pending = this.pending.get(msg.id);
-        if (pending) {
-          clearTimeout(pending.timer);
-          this.pending.delete(msg.id);
-          if (msg.ok) {
-            pending.resolve(msg.payload);
-          } else {
-            pending.reject(new Error(`RPC error: ${JSON.stringify(msg.error)}`));
-          }
-        }
-      }
-      // Ignore events (tick, presence, etc.) — we don't need them
-    } catch {
-      logger.warn('Failed to parse gateway WS message');
-    }
-  }
-
-  private rejectAllPending(reason: string): void {
-    for (const [id, pending] of this.pending) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error(reason));
-      this.pending.delete(id);
-    }
-  }
-
-  private async rpc(
-    method: string,
-    params: Record<string, unknown>,
-    timeoutMs: number,
-  ): Promise<unknown> {
-    await this.connect();
-
-    const id = this.nextId();
-
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`RPC timeout (${timeoutMs}ms) for ${method}`));
-      }, timeoutMs);
-
-      this.pending.set(id, { resolve, reject, timer });
-
-      this.ws!.send(
-        JSON.stringify({
-          type: 'req',
-          id,
-          method,
-          params,
-        }),
-      );
-    });
   }
 
   /**
@@ -202,28 +73,26 @@ export class GatewayClient {
     },
     waitTimeoutMs: number,
   ): Promise<AgentRunResult> {
+    await this.connect();
+
     // Step 1: trigger the run via `agent` RPC
-    const agentResult = (await this.rpc(
-      'agent',
-      {
-        ...params,
-        idempotencyKey: `clawndom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      },
-      30_000,
-    )) as { runId: string; acceptedAt: string };
+    const agentResult = await this.client.request<{ runId: string; acceptedAt: string }>('agent', {
+      ...params,
+      idempotencyKey: `clawndom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    });
 
     const { runId } = agentResult;
     logger.info({ runId }, 'Agent run started');
 
     // Step 2: wait for completion via `agent.wait` RPC
-    const waitResult = (await this.rpc(
+    const waitResult = await this.client.request<AgentRunResult>(
       'agent.wait',
       {
         runId,
         timeoutMs: waitTimeoutMs,
       },
-      waitTimeoutMs + 10_000,
-    )) as AgentRunResult;
+      { timeoutMs: waitTimeoutMs + 10_000 },
+    );
 
     logger.info({ runId, status: waitResult.status }, 'Agent run completed');
 
@@ -231,11 +100,7 @@ export class GatewayClient {
   }
 
   async close(): Promise<void> {
-    this.connected = false;
-    this.rejectAllPending('Client closing');
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
+    this.client.stop();
+    this.started = false;
   }
 }

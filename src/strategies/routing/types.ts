@@ -12,6 +12,7 @@ export const routingRuleSchema = z.object({
   pattern: z.string().optional(),
   flags: z.string().optional(),
   agentId: z.string().min(1),
+  messageTemplate: z.string().optional(),
 });
 
 export type RoutingRule = z.infer<typeof routingRuleSchema>;

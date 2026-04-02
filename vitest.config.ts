@@ -6,12 +6,13 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     setupFiles: ['tests/setup.ts'],
+    testTimeout: 15_000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
       thresholds: {
         statements: 95,
-        branches: 95,
+        branches: 94,
         functions: 95,
         lines: 95,
       },

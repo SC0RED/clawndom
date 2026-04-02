@@ -2,6 +2,8 @@ import { createApp } from './app';
 import { setupLogging } from './lib/logging';
 import { getSettings } from './config';
 import { getLogger } from './lib/logging';
+import { buildAlertRegistry } from './services/alerts';
+import { GatewayClient } from './services/gateway-client';
 import { createWorker } from './services/worker.service';
 import {
   registerRoutingStrategy,
@@ -19,8 +21,11 @@ async function startServer(): Promise<void> {
   registerRoutingStrategy(regexStrategy);
   registerRoutingStrategy(defaultStrategy);
 
+  const gatewayClient = new GatewayClient(settings.openclawGatewayWsUrl, settings.openclawToken);
+
+  const alertRegistry = buildAlertRegistry();
   for (const provider of settings.providers) {
-    createWorker(provider);
+    createWorker({ provider, gatewayClient, alertRegistry });
   }
   logger.info({ providers: settings.providers.map((p) => p.name) }, 'Workers started');
 
@@ -33,6 +38,7 @@ async function startServer(): Promise<void> {
 
   const shutdown = (): void => {
     logger.info('Shutting down...');
+    gatewayClient.close().catch(() => {});
     process.exit(0);
   };
 

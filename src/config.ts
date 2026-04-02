@@ -2,6 +2,17 @@ import { z } from 'zod';
 
 import { routingConfigSchema } from './strategies/routing';
 
+const modelRuleSchema = z.object({
+  /** Dot-notation field path to match against the webhook payload. */
+  field: z.string().min(1),
+  /** Value(s) the resolved field must match (string or array of strings). */
+  matches: z.union([z.string(), z.array(z.string())]),
+  /** Model identifier to use when this rule matches. */
+  model: z.string().min(1),
+});
+
+export type ModelRule = z.infer<typeof modelRuleSchema>;
+
 const providerSchema = z.object({
   name: z.string().min(1),
   routePath: z.string().min(1),
@@ -9,6 +20,8 @@ const providerSchema = z.object({
   signatureStrategy: z.enum(['websub', 'github']),
   openclawHookUrl: z.string().url(),
   routing: routingConfigSchema,
+  modelRules: z.array(modelRuleSchema).optional(),
+  messageTemplate: z.string().optional(),
 });
 
 export type ProviderConfig = z.infer<typeof providerSchema>;
@@ -22,10 +35,13 @@ const settingsSchema = z.object({
   logFormat: z.enum(['json', 'human']).default('json'),
   openclawToken: z.string().min(1),
   openclawHookUrl: z.string().default('http://127.0.0.1:18789/hooks/agent'),
+  openclawGatewayWsUrl: z.string().default('ws://127.0.0.1:18789'),
   openclawAgentId: z.string().default('patch'),
   redisUrl: z.string().default('redis://127.0.0.1:6379'),
   maxConcurrentRuns: z.coerce.number().min(1).default(1),
   agentWaitTimeoutMs: z.coerce.number().min(0).default(1_800_000),
+  jobMaxAttempts: z.coerce.number().min(1).default(2),
+  jobBackoffDelayMs: z.coerce.number().min(0).default(5_000),
   sessionsFilePath: z.string().default(''),
   providers: z
     .array(providerSchema)
@@ -61,10 +77,13 @@ export function getSettings(): Settings {
     logFormat: process.env.LOG_FORMAT,
     openclawToken: process.env.OPENCLAW_TOKEN,
     openclawHookUrl: process.env.OPENCLAW_HOOK_URL,
+    openclawGatewayWsUrl: process.env.OPENCLAW_GATEWAY_WS_URL,
     openclawAgentId: process.env.OPENCLAW_AGENT_ID,
     redisUrl: process.env.REDIS_URL,
     maxConcurrentRuns: process.env.MAX_CONCURRENT_RUNS,
     agentWaitTimeoutMs: process.env.AGENT_WAIT_TIMEOUT_MS,
+    jobMaxAttempts: process.env.JOB_MAX_ATTEMPTS,
+    jobBackoffDelayMs: process.env.JOB_BACKOFF_DELAY_MS,
     sessionsFilePath:
       process.env.SESSIONS_FILE_PATH ||
       `${process.env.HOME}/.openclaw/agents/${process.env.OPENCLAW_AGENT_ID || 'patch'}/sessions/sessions.json`,

@@ -1,93 +1,220 @@
-import { Worker } from 'bullmq';
+import { Worker, Queue } from 'bullmq';
 import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
 
-import type { ProviderConfig } from '../config';
+import type { ProviderConfig, ModelRule } from '../config';
 import { getSettings } from '../config';
 import { getLogger } from '../lib/logging';
-import { resolveAgent } from '../strategies/routing';
-import { waitForSessionIdle } from './session-monitor.service';
+import { renderTemplate } from '../lib/template/template-engine';
+import { extractWebhookContext } from '../strategies/context';
+import { getDedupRedis } from './dedup.service';
+import { resolveAgent, resolveFieldPath } from '../strategies/routing';
+import type { AlertRegistry } from './alerts';
+import type { JobAlert } from './alerts';
+import type { GatewayClient } from './gateway-client';
+import { buildQueueName } from './queue.service';
 
 const logger = getLogger('worker');
 
-function buildQueueName(providerName: string): string {
-  return `webhooks-${providerName}`;
+/**
+ * Job data envelope. The webhook payload is wrapped with attempt metadata
+ * so we can track retries without relying on BullMQ's built-in attempts
+ * (which hold the failed job at the front of the queue).
+ */
+export interface JobEnvelope {
+  /** Original webhook body (stringified JSON). */
+  payload: string;
+  /** Current attempt number (1-indexed). */
+  attempt: number;
+  /** Original job ID for traceability across re-enqueues. */
+  originalJobId?: string;
+}
+
+/**
+ * Wrap a raw payload string into a JobEnvelope for first attempt.
+ * If the data is already an envelope (from a re-enqueue), return as-is.
+ */
+export function parseEnvelope(data: string): JobEnvelope {
+  try {
+    const parsed = JSON.parse(data);
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'payload' in parsed &&
+      'attempt' in parsed
+    ) {
+      return parsed as JobEnvelope;
+    }
+  } catch {
+    // Not JSON or not an envelope — treat as raw payload
+  }
+  return { payload: data, attempt: 1 };
+}
+
+/**
+ * Evaluate model rules against a parsed payload. Returns the model string
+ * from the first matching rule, or undefined if no rules match.
+ *
+ * Example Jira model rules (configured via PROVIDERS_CONFIG):
+ *   - field: "changelog.items[*].field", matches: "status",
+ *     combined with field: "issue.fields.status.name",
+ *     matches: ["Plan", "Ready for Development"] → "anthropic/claude-opus-4-6"
+ *   - All other events → "anthropic/claude-sonnet-4-6"
+ */
+export function resolveModel(
+  payload: unknown,
+  rules: ReadonlyArray<ModelRule> | undefined,
+): string | undefined {
+  if (!rules || rules.length === 0) {
+    return undefined;
+  }
+
+  for (const rule of rules) {
+    const value = resolveFieldPath(payload, rule.field);
+    if (value === undefined) {
+      continue;
+    }
+
+    const matchTargets = Array.isArray(rule.matches) ? rule.matches : [rule.matches];
+    const fieldValues = Array.isArray(value) ? value : [value];
+
+    const matched = fieldValues.some(
+      (fieldValue) => typeof fieldValue === 'string' && matchTargets.includes(fieldValue),
+    );
+
+    if (matched) {
+      return rule.model;
+    }
+  }
+
+  return undefined;
 }
 
 export async function processJob(
   job: Job<string>,
   provider: ProviderConfig,
-  signal?: AbortSignal,
+  gatewayClient: GatewayClient,
 ): Promise<void> {
   const settings = getSettings();
-  logger.info({ jobId: job.id, provider: provider.name }, 'Processing webhook job');
+  const envelope = parseEnvelope(job.data);
+
+  logger.info(
+    {
+      jobId: job.id,
+      provider: provider.name,
+      attempt: envelope.attempt,
+      maxAttempts: settings.jobMaxAttempts,
+    },
+    'Processing webhook job',
+  );
 
   let parsedPayload: unknown;
   try {
-    parsedPayload = JSON.parse(job.data);
+    parsedPayload = JSON.parse(envelope.payload);
   } catch {
     parsedPayload = {};
   }
 
-  const agentId = resolveAgent(parsedPayload, provider.routing, settings.openclawAgentId);
-  if (agentId === null) {
+  const webhookContext = extractWebhookContext(provider.name, parsedPayload);
+  logger.info(
+    {
+      jobId: job.id,
+      provider: provider.name,
+      contextId: webhookContext.id,
+      contextTitle: webhookContext.title,
+      contextStatus: webhookContext.status,
+      contextSource: webhookContext.source,
+    },
+    'Webhook context',
+  );
+
+  const resolved = resolveAgent(parsedPayload, provider.routing, settings.openclawAgentId);
+  if (resolved === null) {
     logger.warn(
       { jobId: job.id, provider: provider.name },
       'routing:no-match — skipping forwarding',
     );
     return;
   }
+  const { agentId, messageTemplate: ruleTemplate } = resolved;
 
-  const sessionKey = `hook:${provider.name}:${job.id ?? 'unknown'}`;
-  const envelope = JSON.stringify({
-    message: job.data,
-    agentId,
-    sessionKey,
-    deliver: false,
-  });
-
-  const response = await fetch(settings.openclawHookUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.openclawToken}`,
-    },
-    body: envelope,
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Gateway returned ${response.status}: ${body}`);
-  }
-
-  const result = (await response.json()) as { runId?: string };
-  const fileSessionKey = `agent:${agentId}:${sessionKey}`;
+  // Extract template filename for logging
+  const templateMatch = ruleTemplate?.match(/jira-[^.]+\.md/);
+  const templateName = templateMatch ? templateMatch[0] : (ruleTemplate ?? 'default');
 
   logger.info(
-    { jobId: job.id, provider: provider.name, runId: result.runId, fileSessionKey },
-    'Webhook delivered — waiting for session idle',
+    { jobId: job.id, provider: provider.name, template: templateName, agentId },
+    'Routing matched',
   );
 
-  await waitForSessionIdle({
-    sessionsFilePath: settings.sessionsFilePath,
-    sessionKey: fileSessionKey,
-    timeoutMs: settings.agentWaitTimeoutMs,
-    signal,
-  });
+  const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
+  const selectedModel = resolveModel(parsedPayload, provider.modelRules);
+
+  if (selectedModel) {
+    logger.info(
+      { jobId: job.id, provider: provider.name, model: selectedModel },
+      'Model selected by routing rule',
+    );
+  }
+
+  const template = ruleTemplate ?? provider.messageTemplate;
+  const message = template ? await renderTemplate(template, parsedPayload) : envelope.payload;
+
+  const sessionKey = `agent:${agentId}:hook-${provider.name}-${traceId}`;
 
   logger.info(
-    { jobId: job.id, provider: provider.name, runId: result.runId },
-    'Session idle — job complete',
+    { jobId: job.id, provider: provider.name, sessionKey, agentId, traceId },
+    'Delivering prompt via agent RPC with completion wait',
+  );
+
+  const result = await gatewayClient.runAndWait(
+    {
+      message,
+      sessionKey,
+      agentId,
+      // Note: model overrides not authorized for external callers.
+      // Patch's agent config handles model selection (Opus primary → Sonnet → Haiku).
+    },
+    settings.agentWaitTimeoutMs,
+  );
+
+  if (result.status === 'error') {
+    throw new Error(`Agent run failed: ${result.error ?? 'unknown error'}`);
+  }
+
+  if (result.status === 'timeout') {
+    throw new Error(`Agent run timed out (runId: ${result.runId})`);
+  }
+
+  // Clear dedup key so the same ticket+status can be re-triggered if needed
+  if (webhookContext.id !== '?') {
+    const dedupKey = `clawndom:dedup:${provider.name}:${webhookContext.id}:${webhookContext.status}`;
+    await getDedupRedis().del(dedupKey);
+  }
+
+  logger.info(
+    { jobId: job.id, provider: provider.name, sessionKey, runId: result.runId },
+    'Agent run completed — job complete',
   );
 }
 
-export function createWorker(provider: ProviderConfig): Worker<string> {
+export interface CreateWorkerOptions {
+  provider: ProviderConfig;
+  gatewayClient: GatewayClient;
+  alertRegistry?: AlertRegistry;
+}
+
+export function createWorker(options: CreateWorkerOptions): Worker<string> {
+  const { provider, gatewayClient, alertRegistry } = options;
+
   const settings = getSettings();
-  const connection = new IORedis(settings.redisUrl, { maxRetriesPerRequest: null });
+  const redisUrl = settings.redisUrl;
+  const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  const maxAttempts = settings.jobMaxAttempts;
 
   const worker = new Worker<string>(
     buildQueueName(provider.name),
-    (job) => processJob(job, provider),
+    (job) => processJob(job, provider, gatewayClient),
     {
       connection,
       concurrency: 1,
@@ -97,9 +224,96 @@ export function createWorker(provider: ProviderConfig): Worker<string> {
   );
 
   worker.on('failed', (job, error) => {
-    logger.error({ jobId: job?.id, provider: provider.name, error: error.message }, 'Job failed');
+    if (!job) return;
+
+    const envelope = parseEnvelope(job.data);
+    const isFinalFailure = envelope.attempt >= maxAttempts;
+
+    if (isFinalFailure) {
+      // Summarily executed in front of the other jobs so they will learn.
+      logger.error(
+        {
+          jobId: job.id,
+          provider: provider.name,
+          error: error.message,
+          attempt: envelope.attempt,
+          maxAttempts,
+        },
+        'Job permanently failed — all retries exhausted',
+      );
+
+      if (alertRegistry) {
+        const traceId = envelope.originalJobId ?? job.id ?? 'unknown';
+        const alert: JobAlert = {
+          jobId: traceId,
+          sessionKey: `agent:${settings.openclawAgentId}:main`,
+          agentId: settings.openclawAgentId,
+          error: error.message,
+          attempts: envelope.attempt,
+          maxAttempts,
+          provider: provider.name,
+          failedAt: new Date(),
+        };
+
+        alertRegistry.sendAll(alert).catch((err) => {
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            'Alert dispatch failed',
+          );
+        });
+      }
+    } else {
+      // Bad job! Back to the end of the line.
+      logger.warn(
+        {
+          jobId: job.id,
+          provider: provider.name,
+          error: error.message,
+          attempt: envelope.attempt,
+          maxAttempts,
+          action: 'requeue-to-back',
+        },
+        'Job failed — re-enqueueing to back of queue',
+      );
+
+      const retryEnvelope: JobEnvelope = {
+        payload: envelope.payload,
+        attempt: envelope.attempt + 1,
+        originalJobId: envelope.originalJobId ?? job.id ?? undefined,
+      };
+
+      // Re-enqueue to the back — other waiting jobs go first
+      const retryConn = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+      const queue = new Queue(buildQueueName(provider.name), { connection: retryConn });
+      queue
+        .add('webhook-event', JSON.stringify(retryEnvelope))
+        .then(() => {
+          logger.info(
+            {
+              jobId: job.id,
+              provider: provider.name,
+              newAttempt: retryEnvelope.attempt,
+              originalJobId: retryEnvelope.originalJobId,
+            },
+            'Job re-enqueued to back of queue',
+          );
+        })
+        .catch((err) => {
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err), jobId: job.id },
+            'Failed to re-enqueue job — job is lost',
+          );
+        })
+        .finally(() => {
+          queue.close().catch(() => {});
+          retryConn.quit().catch(() => {});
+        });
+    }
   });
 
-  logger.info({ provider: provider.name, queue: buildQueueName(provider.name) }, 'Worker started');
+  logger.info(
+    { provider: provider.name, queue: buildQueueName(provider.name), maxAttempts },
+    'Worker started',
+  );
   return worker;
 }
