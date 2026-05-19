@@ -34,6 +34,8 @@ const purgeSchema = z.object({
 const orderFieldSchema = z.enum(['created_at', 'updated_at', 'name']);
 const orderDirectionSchema = z.enum(['asc', 'desc']);
 
+const PUBLIC_MAX_RESULTS = 500;
+
 function parseFindQuery(request: Request): {
   kinds?: string[];
   q?: string;
@@ -41,6 +43,7 @@ function parseFindQuery(request: Request): {
   relation_type?: string;
   text_match?: string;
   status?: string;
+  query?: string;
   order?: { field: 'created_at' | 'updated_at' | 'name'; dir: 'asc' | 'desc' };
   limit?: number;
 } {
@@ -61,6 +64,8 @@ function parseFindQuery(request: Request): {
   if (typeof textMatch === 'string' && textMatch !== '') result.text_match = textMatch;
   const status = request.query['status'];
   if (typeof status === 'string' && status !== '') result.status = status;
+  const semanticQuery = request.query['query'];
+  if (typeof semanticQuery === 'string' && semanticQuery !== '') result.query = semanticQuery;
   const orderField = request.query['order_field'];
   const orderDir = request.query['order_dir'];
   if (typeof orderField === 'string' && typeof orderDir === 'string') {
@@ -124,13 +129,29 @@ function handleStoreError(error: unknown, response: Response, operation: string)
 }
 
 export function createListEntitiesHandler(registry: EntityRegistry = getEntityRegistry()) {
-  return (request: Request, response: Response): void => {
+  return async (request: Request, response: Response): Promise<void> => {
     const context = getAgentContext(request, response, registry);
     if (context === null) return;
     try {
-      const query = parseFindQuery(request);
-      const results = context.store.find(query);
-      response.status(200).json({ entities: results });
+      const findQuery = parseFindQuery(request);
+      const { query: semanticQuery, ...storeQuery } = findQuery;
+      // When semantic re-rank is requested, widen the SQL fetch — the
+      // re-rank is cheap and the agent is the ultimate filter. The
+      // declared `limit` only constrains the final returned list.
+      const declaredLimit = storeQuery.limit ?? 50;
+      const fetchLimit =
+        semanticQuery !== undefined && context.embeddingService !== undefined
+          ? Math.min(Math.max(declaredLimit * 4, 50), PUBLIC_MAX_RESULTS)
+          : declaredLimit;
+      const results = context.store.find({ ...storeQuery, limit: fetchLimit });
+      if (semanticQuery === undefined || context.embeddingService === undefined) {
+        response.status(200).json({ entities: results.slice(0, declaredLimit) });
+        return;
+      }
+      const ranked = await context.embeddingService.semanticRank(semanticQuery, results);
+      response
+        .status(200)
+        .json({ entities: ranked.slice(0, declaredLimit).map((hit) => hit.entity) });
     } catch (error) {
       handleStoreError(error, response, 'find');
     }
@@ -180,6 +201,19 @@ export function createUpsertEntityHandler(registry: EntityRegistry = getEntityRe
           actor: parsed.data.actor ?? null,
         },
       );
+      // Fire-and-forget: the entity + audit row are already committed.
+      // An embedding miss only degrades semantic ranking (find?query=
+      // falls back to similarity 0), so we never let an embedding
+      // failure surface as a failed HTTP write to the caller.
+      if (context.embeddingService !== undefined) {
+        context.embeddingService.ensureEmbedded(entity).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn(
+            { entityId: entity.id, kind: entity.kind, error: message },
+            'Failed to embed entity post-upsert; semantic recall will skip this entry',
+          );
+        });
+      }
       response.status(200).json({ entity });
     } catch (error) {
       handleStoreError(error, response, 'upsert');

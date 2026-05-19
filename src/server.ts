@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { bootstrapMemoryService } from './services/memory/bootstrap';
+import { getEmbeddingProvider } from './services/memory/embedding';
 import { getEntityRegistry } from './services/entities/entity-registry';
 import { MemoryPruningScheduler } from './services/memory/pruning.service';
 import { registerAgentSchedules } from './services/scheduler.service';
@@ -319,11 +320,16 @@ function registerAgentEntityContexts(agents: readonly ResolvedAgent[], logger: L
     const workspaceSchemas = join(agent.dir, 'schemas');
     if (!existsSync(workspaceSchemas)) continue;
     try {
+      const embeddingProvider = resolveEntityEmbeddingProvider(agent);
       registry.register({
         agentName: agent.name,
         workspacePath: agent.dir,
+        embeddingProvider,
       });
-      logger.info({ agent: agent.name }, 'Entity store registered for agent');
+      logger.info(
+        { agent: agent.name, embeddingProvider: embeddingProvider?.name ?? 'none' },
+        'Entity store registered for agent',
+      );
     } catch (error) {
       logger.error(
         { agent: agent.name, error: error instanceof Error ? error.message : String(error) },
@@ -332,6 +338,23 @@ function registerAgentEntityContexts(agents: readonly ResolvedAgent[], logger: L
       throw error;
     }
   }
+}
+
+/**
+ * Pick the embedding provider for an agent's entity store. The agent's
+ * memory namespaces already pick one (validated at config-load), so we
+ * reuse the first one rather than duplicating config. Agents without a
+ * memory block get no entity embeddings — recall falls back to
+ * text_match / status filters.
+ */
+function resolveEntityEmbeddingProvider(
+  agent: ResolvedAgent,
+): ReturnType<typeof getEmbeddingProvider> {
+  const namespaces = agent.config.memory?.namespaces;
+  if (namespaces === undefined) return undefined;
+  const first = Object.values(namespaces)[0];
+  if (first === undefined) return undefined;
+  return getEmbeddingProvider(first.embeddingProvider);
 }
 
 async function startServer(): Promise<void> {
@@ -364,15 +387,16 @@ async function startServer(): Promise<void> {
   // Fails boot in CLAWNDOM_ENV=production if any repo has uncommitted changes.
   await initializeAgentVersion(agents.map((a) => a.dir));
 
-  // Register entity store + resolver for each agent whose workspace
-  // ships a schemas/ directory + relations.json. Lazy: agents without
-  // workspace artifacts get no entity context, and the worker hook
-  // no-ops for them. See openspec/changes/entities.
-  registerAgentEntityContexts(agents, logger);
-
   const memoryNamespaces = await bootstrapMemoryService(agents, secretManager);
   const pruningScheduler = new MemoryPruningScheduler(memoryNamespaces);
   pruningScheduler.start();
+
+  // Register entity store + resolver for each agent whose workspace
+  // ships a schemas/ directory + relations.json. Runs after memory
+  // bootstrap so we can reuse its registered embedding providers for
+  // vectorizable kinds. Lazy: agents without workspace artifacts get
+  // no entity context, and the worker hook no-ops for them.
+  registerAgentEntityContexts(agents, logger);
 
   await startWorkers(settings.providers, agents, logger);
 

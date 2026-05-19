@@ -173,6 +173,17 @@ CREATE TABLE IF NOT EXISTS entity_audit (
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON entity_audit(entity_id);
 CREATE INDEX IF NOT EXISTS idx_audit_ts     ON entity_audit(ts);
 
+CREATE TABLE IF NOT EXISTS entity_embeddings (
+  entity_id    TEXT PRIMARY KEY,
+  model_name   TEXT NOT NULL,
+  dimensions   INTEGER NOT NULL,
+  vector       BLOB NOT NULL,
+  embedded_at  INTEGER NOT NULL,
+  FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_model ON entity_embeddings(model_name);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
   properties,
   content='entities',
