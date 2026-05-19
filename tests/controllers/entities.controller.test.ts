@@ -15,6 +15,7 @@ import {
   resetEntityRegistry,
 } from '../../src/services/entities/entity-registry';
 import type { EntityKindSchema } from '../../src/services/entities/entity-schema.service';
+import { DeterministicEmbedder } from '../helpers/deterministic-embedder';
 
 let tempDir: string;
 let workspacePath: string;
@@ -70,27 +71,6 @@ function writeWorkspace(): void {
       has_therapist: { from: 'client', to: 'team_member', description: 'assigned therapist' },
     }),
   );
-}
-
-class DeterministicEmbedder {
-  readonly name = 'test-embedder';
-  readonly dimensions = 32;
-
-  async embed(text: string): Promise<number[]> {
-    const vector = new Array<number>(this.dimensions).fill(0);
-    const words = text.toLowerCase().split(/\W+/).filter(Boolean);
-    for (const word of words) {
-      let hash = 0x811c9dc5;
-      for (let index = 0; index < word.length; index++) {
-        hash ^= word.charCodeAt(index);
-        hash = Math.imul(hash, 0x01000193) >>> 0;
-      }
-      vector[hash % this.dimensions] += 1;
-    }
-    const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
-    if (magnitude === 0) return vector;
-    return vector.map((value) => value / magnitude);
-  }
 }
 
 interface JsonResponse {

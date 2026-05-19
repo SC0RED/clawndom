@@ -6,35 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { EntityEmbeddingService } from '../../../src/services/entities/entity-embedding.service';
 import { EntityStore } from '../../../src/services/entities/entity-store.service';
+import { DeterministicEmbedder } from '../../helpers/deterministic-embedder';
 
 let tempDir: string;
 let store: EntityStore;
-
-class DeterministicEmbedder {
-  readonly name = 'test-embedder';
-  readonly dimensions = 32;
-
-  async embed(text: string): Promise<number[]> {
-    // Word-token bag-of-words into a 32-dim space. Tokens are hashed
-    // with FNV-1a so the bucketing has decent spread; identical inputs
-    // produce identical vectors, inputs sharing tokens overlap, and
-    // inputs with no shared tokens are near-orthogonal.
-    const vector = new Array<number>(this.dimensions).fill(0);
-    const words = text.toLowerCase().split(/\W+/).filter(Boolean);
-    for (const word of words) {
-      let hash = 0x811c9dc5;
-      for (let index = 0; index < word.length; index++) {
-        hash ^= word.charCodeAt(index);
-        hash = Math.imul(hash, 0x01000193) >>> 0;
-      }
-      const bucket = hash % this.dimensions;
-      vector[bucket] = (vector[bucket] ?? 0) + 1;
-    }
-    const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
-    if (magnitude === 0) return vector;
-    return vector.map((value) => value / magnitude);
-  }
-}
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'clawndom-entity-embed-'));
