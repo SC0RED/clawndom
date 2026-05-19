@@ -64,6 +64,18 @@ const onePasswordProviderConfigSchema = z.object({
   type: z.literal('onepassword'),
   /** Path to the `op` CLI binary. Default: resolved via PATH. */
   binary: z.string().optional(),
+  /**
+   * Max attempts per secret when `op read` returns "Too many requests".
+   * Each retry waits an exponential backoff (1s, 2s, 4s, 8s, ...).
+   * Default 5 (up to ~31s of cumulative wait before giving up on a
+   * single secret).
+   */
+  maxAttempts: z.number().int().min(1).max(10).optional(),
+  /**
+   * Base delay (ms) for the exponential backoff between retries.
+   * Default 1000. Backoff grows as `baseDelayMs * 2^(attempt-1)`.
+   */
+  retryBaseDelayMs: z.number().int().positive().optional(),
 });
 
 const oauthProviderConfigSchema = z.object({
