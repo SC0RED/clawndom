@@ -95,4 +95,141 @@ describe('OnePasswordProvider', () => {
     const result = await provider.resolve(bindings);
     expect(result.has('missing')).toBe(false);
   });
+
+  it('retries on "Too many requests" and eventually succeeds', async () => {
+    let attempts = 0;
+    vi.mocked(execFile).mockImplementation(
+      (
+        _cmd: string,
+        args: readonly string[],
+        _opts: unknown,
+        callback?: (...args: unknown[]) => void,
+      ) => {
+        if (typeof _opts === 'function') {
+          callback = _opts;
+        }
+        if (args[0] === '--version') {
+          callback!(null, { stdout: 'op 2.0.0' });
+          return {} as ReturnType<typeof execFile>;
+        }
+        attempts += 1;
+        if (attempts < 3) {
+          callback!(
+            new Error(
+              'Command failed: op read [...]\n[ERROR] could not get item: Too many requests. Your client has been rate-limited.',
+            ),
+            { stdout: '' },
+          );
+        } else {
+          callback!(null, { stdout: 'success-on-third-try' });
+        }
+        return {} as ReturnType<typeof execFile>;
+      },
+    );
+
+    const provider = new OnePasswordProvider({
+      type: 'onepassword',
+      retryBaseDelayMs: 1, // tight loop for the test
+    });
+    const bindings: SecretBinding[] = [
+      {
+        key: 'eventually_ok',
+        provider: 'onepassword',
+        reference: 'op://Clawndom/eventually/ok',
+        required: true,
+      },
+    ];
+    const result = await provider.resolve(bindings);
+    expect(result.get('eventually_ok')).toBe('success-on-third-try');
+    expect(attempts).toBe(3);
+  });
+
+  it('gives up after maxAttempts on persistent rate-limit', async () => {
+    let attempts = 0;
+    vi.mocked(execFile).mockImplementation(
+      (
+        _cmd: string,
+        args: readonly string[],
+        _opts: unknown,
+        callback?: (...args: unknown[]) => void,
+      ) => {
+        if (typeof _opts === 'function') {
+          callback = _opts;
+        }
+        if (args[0] === '--version') {
+          callback!(null, { stdout: 'op 2.0.0' });
+          return {} as ReturnType<typeof execFile>;
+        }
+        attempts += 1;
+        callback!(new Error('Too many requests. Your client has been rate-limited.'), {
+          stdout: '',
+        });
+        return {} as ReturnType<typeof execFile>;
+      },
+    );
+
+    const provider = new OnePasswordProvider({
+      type: 'onepassword',
+      maxAttempts: 3,
+      retryBaseDelayMs: 1,
+    });
+    const bindings: SecretBinding[] = [
+      {
+        key: 'stuck',
+        provider: 'onepassword',
+        reference: 'op://Clawndom/stuck/field',
+        required: true,
+      },
+    ];
+    const result = await provider.resolve(bindings);
+    expect(result.has('stuck')).toBe(false);
+    expect(attempts).toBe(3);
+  });
+
+  it('resolves bindings serially, not in parallel', async () => {
+    const callOrder: string[] = [];
+    const inflight = new Set<string>();
+    let maxInflight = 0;
+    vi.mocked(execFile).mockImplementation(
+      (
+        _cmd: string,
+        args: readonly string[],
+        _opts: unknown,
+        callback?: (...args: unknown[]) => void,
+      ) => {
+        if (typeof _opts === 'function') {
+          callback = _opts;
+        }
+        if (args[0] === '--version') {
+          callback!(null, { stdout: 'op 2.0.0' });
+          return {} as ReturnType<typeof execFile>;
+        }
+        const ref = args[1] as string;
+        inflight.add(ref);
+        maxInflight = Math.max(maxInflight, inflight.size);
+        // Defer the callback so any concurrent call would be visible.
+        setTimeout(() => {
+          callOrder.push(ref);
+          inflight.delete(ref);
+          callback!(null, { stdout: `value-for-${ref}` });
+        }, 5);
+        return {} as ReturnType<typeof execFile>;
+      },
+    );
+
+    const provider = new OnePasswordProvider({ type: 'onepassword' });
+    const bindings: SecretBinding[] = ['a', 'b', 'c'].map((k) => ({
+      key: k,
+      provider: 'onepassword',
+      reference: `op://Clawndom/${k}/field`,
+      required: true,
+    }));
+    await provider.resolve(bindings);
+    expect(maxInflight).toBe(1);
+    expect(callOrder).toEqual([
+      'op://Clawndom/a/field',
+      'op://Clawndom/b/field',
+      'op://Clawndom/c/field',
+    ]);
+  });
 });
