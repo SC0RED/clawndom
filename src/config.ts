@@ -8,33 +8,6 @@ import { runnerConfigSchema } from './runners/types';
 import { secretBindingSchema, secretProviderConfigSchema } from './secrets/types';
 import { builderAgentFieldsSchema } from './system-agents/builder/agent-config';
 
-/**
- * On-disk cache for resolved secrets. Added in SPE-2005 to break the
- * restart-loop → 1Password DDoS amplification. The defaults match the
- * tmpfs path provisioned by `clawndom.service`'s RuntimeDirectory= directive
- * (also added in SPE-2005). Override knobs:
- *   - CLAWNDOM_SECRETS_CACHE_ENABLED — set to "false" / "0" to disable.
- *   - CLAWNDOM_SECRETS_CACHE_PATH — alternate path (e.g. for local dev).
- *   - CLAWNDOM_SECRETS_CACHE_MAX_AGE_SECONDS — global staleness ceiling for
- *     entries with no per-binding ttlSeconds. Default 86400 (24h).
- */
-export const secretCacheConfigSchema = z.object({
-  enabled: z.preprocess((v) => {
-    if (v === undefined) return undefined;
-    if (typeof v === 'boolean') return v;
-    if (typeof v === 'string') {
-      const lower = v.toLowerCase();
-      if (lower === '' || lower === 'false' || lower === '0' || lower === 'no') return false;
-      return true;
-    }
-    return Boolean(v);
-  }, z.boolean().default(true)),
-  path: z.string().min(1).default('/run/clawndom/secrets.json'),
-  maxAgeSeconds: z.coerce.number().positive().default(86_400),
-});
-
-export type SecretCacheConfig = z.infer<typeof secretCacheConfigSchema>;
-
 export const modelRuleSchema = z.object({
   /** Dot-notation field path to match against the webhook payload. */
   field: z.string().min(1),
@@ -242,8 +215,6 @@ const settingsSchema = z.object({
   secretProviders: z.array(secretProviderConfigSchema).optional(),
   /** Secret bindings: map logical keys to vault-specific references. */
   secrets: z.array(secretBindingSchema).optional(),
-  /** On-disk cache configuration for resolved secrets (SPE-2005). */
-  secretCache: secretCacheConfigSchema.default({}),
   /**
    * Per-trace cap on agent-created scheduled tasks. The registry counts
    * tasks tagged with the same `createdByTraceId` and refuses
@@ -380,11 +351,6 @@ export function getSettings(): Settings {
     agentToken: process.env['CLAWNDOM_AGENT_TOKEN'],
     secretProviders: parseJsonEnv('SECRETS_PROVIDERS_CONFIG'),
     secrets: parseJsonEnv('SECRETS_CONFIG'),
-    secretCache: {
-      enabled: process.env['CLAWNDOM_SECRETS_CACHE_ENABLED'],
-      path: process.env['CLAWNDOM_SECRETS_CACHE_PATH'],
-      maxAgeSeconds: process.env['CLAWNDOM_SECRETS_CACHE_MAX_AGE_SECONDS'],
-    },
     scheduledTasksMaxPerTrace: process.env['SCHEDULED_TASKS_MAX_PER_TRACE'],
     scheduledTasksMaxFutureWindowMs: process.env['SCHEDULED_TASKS_MAX_FUTURE_WINDOW_MS'],
     scheduledTasksRagTopKDefault: process.env['SCHEDULED_TASKS_RAG_TOPK_DEFAULT'],

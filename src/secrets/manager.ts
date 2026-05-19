@@ -1,22 +1,10 @@
 import { getLogger } from '../lib/logging';
-import type { CachedSecretEntry, SecretCache } from './cache';
 import { getSecretProvider } from './registry';
 import type { SecretBinding, ResolvedSecret } from './types';
 
 const logger = getLogger('secret-manager');
 
 const MAX_REFRESH_FAILURES = 3;
-
-export interface SecretManagerOptions {
-  /**
-   * Optional persistent cache for resolved secrets. When provided, the
-   * manager reads cached values on `initialize()` and writes resolved
-   * values back to the cache after each successful provider resolution
-   * (boot + refresh). See {@link SecretCache} for the contract and
-   * `src/secrets/cache.ts` for the rationale (SPE-2005).
-   */
-  cache?: SecretCache;
-}
 
 let instance: SecretManager | null = null;
 
@@ -37,36 +25,26 @@ export class SecretManager {
   private readonly bindingByKey: ReadonlyMap<string, SecretBinding>;
   private readonly timers: ReturnType<typeof setTimeout>[] = [];
   private readonly failureCounts = new Map<string, number>();
-  private readonly cache: SecretCache | undefined;
 
-  constructor(bindings: readonly SecretBinding[], options: SecretManagerOptions = {}) {
+  constructor(bindings: readonly SecretBinding[]) {
     this.bindings = bindings;
     this.bindingByKey = new Map(bindings.map((b) => [b.key, b]));
-    this.cache = options.cache;
     setInstance(this);
   }
 
   /**
    * Resolve all declared secrets. Must be called before workers start.
-   * Two-step pipeline (cache hits, then provider resolution for misses)
-   * is split into helper methods so this function stays under cognitive-
-   * complexity thresholds; behaviour is identical to one inline pass.
+   * Walks every binding's provider and stores resolved values in memory
+   * for the lifetime of the process. The pluggable provider strategy is
+   * responsible for handling its own load/rate-limit concerns —
+   * `OnePasswordProvider`, for example, serializes its reads + retries
+   * on the 1P aggregate rate limit so this code path doesn't need a
+   * persistent cache to escape boot storms.
    */
   async initialize(): Promise<void> {
-    logger.info(
-      { count: this.bindings.length, cache: this.cache !== undefined },
-      'Resolving secrets',
-    );
+    logger.info({ count: this.bindings.length }, 'Resolving secrets');
 
-    const missingBindings = await this.applyCacheHits();
-    const firstError = await this.resolveMissingViaProviders(missingBindings);
-
-    // Persist successful resolutions to the cache BEFORE raising any
-    // required-miss error. Partial cache means the next restart skips
-    // the slow provider for keys that did resolve, even when a different
-    // required key keeps the unit failing — the brake on restart-loop
-    // amplification is the entire point of the cache.
-    await this.persistCacheBestEffort();
+    const firstError = await this.resolveAllViaProviders();
 
     if (firstError !== null) {
       throw firstError;
@@ -77,54 +55,12 @@ export class SecretManager {
   }
 
   /**
-   * Step 1 of initialize(): apply cache hits, return the bindings that
-   * still need provider resolution. A binding is a cache hit iff its
-   * key has a cached entry AND the entry's reference matches AND the
-   * entry's sourceProvider matches — operator rotations or backend
-   * moves invalidate the cached value. The cache itself has already
-   * filtered out TTL-expired, permission-fail, and schema-mismatch
-   * entries.
+   * Resolve every binding through its provider. Returns the first error
+   * encountered (an unresolved required secret) instead of throwing so
+   * the caller can decide when to propagate.
    */
-  private async applyCacheHits(): Promise<SecretBinding[]> {
-    const cached = this.cache ? await this.cache.read() : new Map<string, CachedSecretEntry>();
-    const missingBindings: SecretBinding[] = [];
-    let cacheHits = 0;
-    for (const binding of this.bindings) {
-      const entry = cached.get(binding.key);
-      if (isCacheHit(entry, binding)) {
-        this.secrets.set(
-          binding.key,
-          buildResolved({
-            binding,
-            value: entry.value,
-            source: binding.provider,
-            resolvedAt: new Date(entry.resolvedAt),
-          }),
-        );
-        cacheHits += 1;
-      } else {
-        missingBindings.push(binding);
-      }
-    }
-    if (cacheHits > 0) {
-      logger.info(
-        { hits: cacheHits, misses: missingBindings.length },
-        'Resolved secrets from cache',
-      );
-    }
-    return missingBindings;
-  }
-
-  /**
-   * Step 2 of initialize(): resolve every cache-missed binding through
-   * its provider. Returns the first error encountered (an unresolved
-   * required secret) without throwing — the caller still needs to
-   * persist the partial cache before propagating.
-   */
-  private async resolveMissingViaProviders(
-    missingBindings: readonly SecretBinding[],
-  ): Promise<Error | null> {
-    const grouped = groupBindingsByProvider(missingBindings);
+  private async resolveAllViaProviders(): Promise<Error | null> {
+    const grouped = groupBindingsByProvider(this.bindings);
     let firstError: Error | null = null;
 
     for (const [providerName, providerBindings] of grouped) {
@@ -167,36 +103,6 @@ export class SecretManager {
       }
     }
     return next;
-  }
-
-  /**
-   * Write the current in-memory resolutions to the cache. Failures are
-   * logged and swallowed — a broken cache must never break startup.
-   */
-  private async persistCacheBestEffort(): Promise<void> {
-    if (!this.cache) return;
-
-    const entries = new Map<string, CachedSecretEntry>();
-    for (const [key, secret] of this.secrets) {
-      const binding = this.bindingByKey.get(key);
-      if (!binding) continue;
-      entries.set(key, {
-        sourceProvider: secret.source,
-        reference: binding.reference,
-        value: secret.value,
-        resolvedAt: secret.resolvedAt.toISOString(),
-        ttlSeconds: binding.ttlSeconds,
-      });
-    }
-
-    try {
-      await this.cache.write(entries);
-    } catch (err) {
-      logger.warn(
-        { error: err instanceof Error ? err.message : String(err) },
-        'Failed to persist secrets cache — startup continues',
-      );
-    }
   }
 
   /** Synchronous read from memory. Throws if not found. */
@@ -302,10 +208,6 @@ export class SecretManager {
 
       this.failureCounts.delete(groupKey);
       logger.info({ group: groupKey, resolved: resolved.size }, 'Secrets refreshed');
-
-      // Refresh writes through to the cache so a refreshed token survives
-      // the next restart without going back to the slow provider.
-      await this.persistCacheBestEffort();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failures = (this.failureCounts.get(groupKey) ?? 0) + 1;
@@ -330,20 +232,11 @@ export class SecretManager {
   }
 }
 
-function isCacheHit(
-  entry: CachedSecretEntry | undefined,
-  binding: SecretBinding,
-): entry is CachedSecretEntry {
-  if (entry === undefined) return false;
-  return entry.reference === binding.reference && entry.sourceProvider === binding.provider;
-}
-
 /**
- * Single ResolvedSecret constructor for both the cache-hit and
- * provider-hit paths. Splitting these into two helpers (one per call
- * site) tripped Sonar's duplication detector — same shape, two
- * literals away from each other. Caller supplies the differing fields
- * (value, source, resolvedAt) explicitly.
+ * Single ResolvedSecret constructor. Splitting this into two helpers
+ * (one per call site) tripped Sonar's duplication detector — same
+ * shape, two literals away from each other. Caller supplies the
+ * differing fields (value, source, resolvedAt) explicitly.
  */
 function buildResolved(args: {
   binding: SecretBinding;
