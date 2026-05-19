@@ -204,7 +204,8 @@ describe('OnePasswordProvider', () => {
           callback!(null, { stdout: 'op 2.0.0' });
           return {} as ReturnType<typeof execFile>;
         }
-        const ref = args[1] as string;
+        const ref = args[1];
+        if (!ref) return {} as ReturnType<typeof execFile>;
         inflight.add(ref);
         maxInflight = Math.max(maxInflight, inflight.size);
         // Defer the callback so any concurrent call would be visible.
