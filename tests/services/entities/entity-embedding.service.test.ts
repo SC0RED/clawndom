@@ -159,4 +159,27 @@ describe('EntityEmbeddingService round-trip', () => {
     // Same string in, same string out → cosine similarity ≈ 1.0
     expect(ranked[0]!.similarity).toBeCloseTo(1.0, 4);
   });
+
+  it('rejects a stored vector whose dimensions disagree with the provider', async () => {
+    const service = new EntityEmbeddingService(store, new DeterministicEmbedder(), [
+      { kind: 'memory', textProperty: 'text' },
+    ]);
+    const memory = store.upsert('memory', 'corrupted', {
+      text: 'will be overwritten with bogus bytes',
+      status: 'active',
+    });
+    // Inject a row whose blob length doesn't match the provider's
+    // declared dimensions — simulates a model swap or db corruption.
+    const wrongLengthBuffer = Buffer.alloc(4 * 8); // 8 floats, not 32
+    store.database
+      .prepare(
+        `INSERT INTO entity_embeddings (entity_id, model_name, dimensions, vector, embedded_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(entity_id) DO UPDATE SET
+           dimensions = excluded.dimensions,
+           vector = excluded.vector`,
+      )
+      .run(memory.id, 'test-embedder', 8, wrongLengthBuffer, Date.now());
+    await expect(service.semanticRank('anything', [memory])).rejects.toThrow(/dims/);
+  });
 });

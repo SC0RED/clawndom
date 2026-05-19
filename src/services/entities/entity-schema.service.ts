@@ -152,7 +152,19 @@ function buildVectorizableConfig(
   const config: VectorizableKind[] = [];
   for (const [kind, schema] of Object.entries(schemas)) {
     const property = schema['x-vectorizable-property'];
-    if (typeof property !== 'string' || property.trim() === '') continue;
+    if (property === undefined) continue;
+    if (typeof property !== 'string' || property.trim() === '') {
+      throw new SchemaLoaderError(
+        `schema '${kind}': x-vectorizable-property must be a non-empty string`,
+        'INVALID_SCHEMA',
+      );
+    }
+    if (!(property in schema.properties)) {
+      throw new SchemaLoaderError(
+        `schema '${kind}': x-vectorizable-property '${property}' is not a declared property`,
+        'INVALID_SCHEMA',
+      );
+    }
     config.push({ kind, textProperty: property });
   }
   return config;

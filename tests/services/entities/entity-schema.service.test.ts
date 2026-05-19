@@ -127,6 +127,44 @@ describe('loadWorkspaceSchemas', () => {
     );
     expect(() => loadWorkspaceSchemas(workspace)).toThrow(SchemaLoaderError);
   });
+
+  it('throws INVALID_SCHEMA when x-vectorizable-property names a property not on the schema', () => {
+    writeFileSync(
+      join(workspace, 'schemas', 'memory.schema.json'),
+      JSON.stringify({
+        type: 'object',
+        required: ['text'],
+        properties: { text: { type: 'string' } },
+        'x-vectorizable-property': 'nonexistent_field',
+      }),
+    );
+    expect(() => loadWorkspaceSchemas(workspace)).toThrow(/x-vectorizable-property/);
+  });
+
+  it('throws INVALID_SCHEMA when x-vectorizable-property is empty', () => {
+    writeFileSync(
+      join(workspace, 'schemas', 'memory.schema.json'),
+      JSON.stringify({
+        type: 'object',
+        properties: { text: { type: 'string' } },
+        'x-vectorizable-property': '   ',
+      }),
+    );
+    expect(() => loadWorkspaceSchemas(workspace)).toThrow(/non-empty string/);
+  });
+
+  it('populates vectorizable when x-vectorizable-property is valid', () => {
+    writeFileSync(
+      join(workspace, 'schemas', 'memory.schema.json'),
+      JSON.stringify({
+        type: 'object',
+        properties: { text: { type: 'string' } },
+        'x-vectorizable-property': 'text',
+      }),
+    );
+    const result = loadWorkspaceSchemas(workspace);
+    expect(result.vectorizable).toEqual([{ kind: 'memory', textProperty: 'text' }]);
+  });
 });
 
 describe('SchemaValidator', () => {

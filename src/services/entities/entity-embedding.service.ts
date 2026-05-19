@@ -45,8 +45,16 @@ function encodeVector(vector: number[]): Buffer {
   return buffer;
 }
 
-function decodeVector(buffer: Buffer): number[] {
+function decodeVector(buffer: Buffer, expectedDimensions: number): number[] {
+  if (buffer.byteLength % FLOAT_BYTES !== 0) {
+    throw new Error(
+      `embedding blob byteLength ${buffer.byteLength} is not a multiple of ${FLOAT_BYTES}`,
+    );
+  }
   const length = buffer.byteLength / FLOAT_BYTES;
+  if (length !== expectedDimensions) {
+    throw new Error(`embedding blob has ${length} dims but provider expects ${expectedDimensions}`);
+  }
   const result = new Array<number>(length);
   for (let index = 0; index < length; index++) {
     result[index] = buffer.readFloatLE(index * FLOAT_BYTES);
@@ -160,7 +168,7 @@ export class EntityEmbeddingService {
       .all(...entityIds, this.provider.name);
     const out = new Map<string, number[]>();
     for (const row of rows) {
-      out.set(row.entity_id, decodeVector(row.vector));
+      out.set(row.entity_id, decodeVector(row.vector, this.provider.dimensions));
     }
     return out;
   }

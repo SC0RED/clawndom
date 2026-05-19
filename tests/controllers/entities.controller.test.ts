@@ -514,8 +514,14 @@ describe('entities controller — semantic recall', () => {
   it('list without query= returns store-order results unchanged', async () => {
     context.store.upsert('memory', 'a', { text: 'alpha', status: 'active' });
     context.store.upsert('memory', 'b', { text: 'beta', status: 'active' });
-    const result = await httpRequest('GET', '/api/agents/winston/entities/?kinds=memory');
+    const result = await httpRequest(
+      'GET',
+      '/api/agents/winston/entities/?kinds=memory&order_field=created_at&order_dir=asc',
+    );
     expect(result.status).toBe(200);
-    expect((result.body as { entities: unknown[] }).entities).toHaveLength(2);
+    const entities = (result.body as { entities: Array<{ name: string }> }).entities;
+    expect(entities).toHaveLength(2);
+    expect(entities[0]!.name).toBe('a');
+    expect(entities[1]!.name).toBe('b');
   });
 });

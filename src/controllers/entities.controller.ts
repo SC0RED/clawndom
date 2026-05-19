@@ -34,6 +34,8 @@ const purgeSchema = z.object({
 const orderFieldSchema = z.enum(['created_at', 'updated_at', 'name']);
 const orderDirectionSchema = z.enum(['asc', 'desc']);
 
+const PUBLIC_MAX_RESULTS = 500;
+
 function parseFindQuery(request: Request): {
   kinds?: string[];
   q?: string;
@@ -139,7 +141,7 @@ export function createListEntitiesHandler(registry: EntityRegistry = getEntityRe
       const declaredLimit = storeQuery.limit ?? 50;
       const fetchLimit =
         semanticQuery !== undefined && context.embeddingService !== undefined
-          ? Math.max(declaredLimit * 4, 50)
+          ? Math.min(Math.max(declaredLimit * 4, 50), PUBLIC_MAX_RESULTS)
           : declaredLimit;
       const results = context.store.find({ ...storeQuery, limit: fetchLimit });
       if (semanticQuery === undefined || context.embeddingService === undefined) {
@@ -180,7 +182,7 @@ export function createGetEntityHandler(registry: EntityRegistry = getEntityRegis
 }
 
 export function createUpsertEntityHandler(registry: EntityRegistry = getEntityRegistry()) {
-  return async (request: Request, response: Response): Promise<void> => {
+  return (request: Request, response: Response): void => {
     const context = getAgentContext(request, response, registry);
     if (context === null) return;
     const parsed = upsertSchema.safeParse(request.body);
@@ -199,8 +201,18 @@ export function createUpsertEntityHandler(registry: EntityRegistry = getEntityRe
           actor: parsed.data.actor ?? null,
         },
       );
+      // Fire-and-forget: the entity + audit row are already committed.
+      // An embedding miss only degrades semantic ranking (find?query=
+      // falls back to similarity 0), so we never let an embedding
+      // failure surface as a failed HTTP write to the caller.
       if (context.embeddingService !== undefined) {
-        await context.embeddingService.ensureEmbedded(entity);
+        context.embeddingService.ensureEmbedded(entity).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn(
+            { entityId: entity.id, kind: entity.kind, error: message },
+            'Failed to embed entity post-upsert; semantic recall will skip this entry',
+          );
+        });
       }
       response.status(200).json({ entity });
     } catch (error) {
