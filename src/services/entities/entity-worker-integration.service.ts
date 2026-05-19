@@ -1,8 +1,11 @@
 import type { Actor } from '../../types/actor';
+import { getLogger } from '../../lib/logging';
 
 import type { AgentEntityContext, EntityRegistry } from './entity-registry';
 import { extractMentions } from './entity-mention-extractor.service';
 import type { InboundEvent } from './resolver-strategy';
+
+const logger = getLogger('entity-worker-integration');
 
 export interface RunInteractionRecord {
   inbound_text: string;
@@ -62,6 +65,21 @@ export class EntityWorkerIntegration {
       properties,
       { trace_id: record.trace_id, actor: 'framework:worker' },
     );
+
+    if (context.embeddingService !== undefined) {
+      // Fire-and-forget: the interaction row + relations are already
+      // committed; embedding only governs `history(query=...)` ranking.
+      // A miss means that single interaction can still be found via
+      // text_match / relation filters — recall just won't rank it
+      // semantically. Worth a log line, never a throw.
+      context.embeddingService.ensureEmbedded(interaction).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn(
+          { agentName, interactionId: interaction.id, error: message },
+          'Failed to embed interaction; semantic recall will skip this entry',
+        );
+      });
+    }
 
     if (actor.kind !== 'stranger' && actor.id !== null) {
       context.store.relate(interaction.id, 'from', actor.id, null, {

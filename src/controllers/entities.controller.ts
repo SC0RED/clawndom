@@ -41,6 +41,7 @@ function parseFindQuery(request: Request): {
   relation_type?: string;
   text_match?: string;
   status?: string;
+  query?: string;
   order?: { field: 'created_at' | 'updated_at' | 'name'; dir: 'asc' | 'desc' };
   limit?: number;
 } {
@@ -61,6 +62,8 @@ function parseFindQuery(request: Request): {
   if (typeof textMatch === 'string' && textMatch !== '') result.text_match = textMatch;
   const status = request.query['status'];
   if (typeof status === 'string' && status !== '') result.status = status;
+  const semanticQuery = request.query['query'];
+  if (typeof semanticQuery === 'string' && semanticQuery !== '') result.query = semanticQuery;
   const orderField = request.query['order_field'];
   const orderDir = request.query['order_dir'];
   if (typeof orderField === 'string' && typeof orderDir === 'string') {
@@ -124,13 +127,29 @@ function handleStoreError(error: unknown, response: Response, operation: string)
 }
 
 export function createListEntitiesHandler(registry: EntityRegistry = getEntityRegistry()) {
-  return (request: Request, response: Response): void => {
+  return async (request: Request, response: Response): Promise<void> => {
     const context = getAgentContext(request, response, registry);
     if (context === null) return;
     try {
-      const query = parseFindQuery(request);
-      const results = context.store.find(query);
-      response.status(200).json({ entities: results });
+      const findQuery = parseFindQuery(request);
+      const { query: semanticQuery, ...storeQuery } = findQuery;
+      // When semantic re-rank is requested, widen the SQL fetch — the
+      // re-rank is cheap and the agent is the ultimate filter. The
+      // declared `limit` only constrains the final returned list.
+      const declaredLimit = storeQuery.limit ?? 50;
+      const fetchLimit =
+        semanticQuery !== undefined && context.embeddingService !== undefined
+          ? Math.max(declaredLimit * 4, 50)
+          : declaredLimit;
+      const results = context.store.find({ ...storeQuery, limit: fetchLimit });
+      if (semanticQuery === undefined || context.embeddingService === undefined) {
+        response.status(200).json({ entities: results.slice(0, declaredLimit) });
+        return;
+      }
+      const ranked = await context.embeddingService.semanticRank(semanticQuery, results);
+      response
+        .status(200)
+        .json({ entities: ranked.slice(0, declaredLimit).map((hit) => hit.entity) });
     } catch (error) {
       handleStoreError(error, response, 'find');
     }
@@ -161,7 +180,7 @@ export function createGetEntityHandler(registry: EntityRegistry = getEntityRegis
 }
 
 export function createUpsertEntityHandler(registry: EntityRegistry = getEntityRegistry()) {
-  return (request: Request, response: Response): void => {
+  return async (request: Request, response: Response): Promise<void> => {
     const context = getAgentContext(request, response, registry);
     if (context === null) return;
     const parsed = upsertSchema.safeParse(request.body);
@@ -180,6 +199,9 @@ export function createUpsertEntityHandler(registry: EntityRegistry = getEntityRe
           actor: parsed.data.actor ?? null,
         },
       );
+      if (context.embeddingService !== undefined) {
+        await context.embeddingService.ensureEmbedded(entity);
+      }
       response.status(200).json({ entity });
     } catch (error) {
       handleStoreError(error, response, 'upsert');

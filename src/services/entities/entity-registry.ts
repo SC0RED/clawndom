@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { EntityEmbeddingService, type EntityEmbeddingProvider } from './entity-embedding.service';
 import { EntityResolver } from './entity-resolver.service';
 import {
   type LoadedWorkspace,
@@ -13,12 +14,20 @@ export interface AgentEntityContext {
   resolver: EntityResolver;
   workspace: LoadedWorkspace;
   validator: SchemaValidator;
+  /**
+   * Present when the agent's workspace declares at least one kind with
+   * `x-vectorizable-property` AND a non-null EmbeddingProvider was
+   * supplied at registration. Drives `entity.upsert` auto-embedding and
+   * `entity.find?query=` semantic re-ranking.
+   */
+  embeddingService?: EntityEmbeddingService;
 }
 
 export interface AgentEntityDescriptor {
   agentName: string;
   workspacePath: string;
   databasePath?: string;
+  embeddingProvider?: EntityEmbeddingProvider;
 }
 
 const DEFAULT_DATABASE_ROOT = '/home/ubuntu';
@@ -42,6 +51,13 @@ export class EntityRegistry {
       identityProperties: workspace.identityProperties,
     });
     const context: AgentEntityContext = { store, resolver, workspace, validator };
+    if (descriptor.embeddingProvider !== undefined && workspace.vectorizable.length > 0) {
+      context.embeddingService = new EntityEmbeddingService(
+        store,
+        descriptor.embeddingProvider,
+        workspace.vectorizable,
+      );
+    }
     this.contexts.set(descriptor.agentName, context);
     return context;
   }

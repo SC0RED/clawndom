@@ -24,6 +24,13 @@ export interface EntityKindSchema {
   properties: Record<string, JSONSchemaProperty>;
   'x-natural-keys'?: string[];
   'x-natural-key-fields'?: string[];
+  /**
+   * Name of the property whose string value should be vectorized for
+   * semantic recall. Currently used by `memory` and `interaction`
+   * kinds. Workspaces opt kinds in by adding this annotation to the
+   * kind's JSON Schema; absent kinds are not embedded.
+   */
+  'x-vectorizable-property'?: string;
 }
 
 export interface RelationDeclaration {
@@ -51,11 +58,17 @@ export interface IdentityPropertyIndex {
   byPropertyName: Record<string, Array<{ kind: string; property: string }>>;
 }
 
+export interface VectorizableKind {
+  kind: string;
+  textProperty: string;
+}
+
 export interface LoadedWorkspace {
   schemas: Record<string, EntityKindSchema>;
   relations: RelationsConfig;
   naturalKeys: NaturalKeyConfig;
   identityProperties: IdentityPropertyIndex;
+  vectorizable: ReadonlyArray<VectorizableKind>;
 }
 
 export class SchemaLoaderError extends Error {
@@ -129,7 +142,20 @@ export function loadWorkspaceSchemas(workspacePath: string): LoadedWorkspace {
     relations,
     naturalKeys: buildNaturalKeyConfig(schemas),
     identityProperties: buildIdentityPropertyIndex(schemas),
+    vectorizable: buildVectorizableConfig(schemas),
   };
+}
+
+function buildVectorizableConfig(
+  schemas: Record<string, EntityKindSchema>,
+): ReadonlyArray<VectorizableKind> {
+  const config: VectorizableKind[] = [];
+  for (const [kind, schema] of Object.entries(schemas)) {
+    const property = schema['x-vectorizable-property'];
+    if (typeof property !== 'string' || property.trim() === '') continue;
+    config.push({ kind, textProperty: property });
+  }
+  return config;
 }
 
 function buildNaturalKeyConfig(schemas: Record<string, EntityKindSchema>): NaturalKeyConfig {

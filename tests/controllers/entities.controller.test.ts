@@ -48,17 +48,49 @@ const CLIENT_SCHEMA: EntityKindSchema = {
   'x-natural-keys': ['legal_name', 'date_of_birth'],
 };
 
+const MEMORY_SCHEMA: EntityKindSchema = {
+  type: 'object',
+  required: ['text', 'status'],
+  properties: {
+    text: { type: 'string' },
+    status: { type: 'string', enum: ['active', 'archived'] },
+  },
+  'x-vectorizable-property': 'text',
+};
+
 function writeWorkspace(): void {
   const schemasDir = join(workspacePath, 'schemas');
   mkdirSync(schemasDir, { recursive: true });
   writeFileSync(join(schemasDir, 'team_member.schema.json'), JSON.stringify(TEAM_SCHEMA));
   writeFileSync(join(schemasDir, 'client.schema.json'), JSON.stringify(CLIENT_SCHEMA));
+  writeFileSync(join(schemasDir, 'memory.schema.json'), JSON.stringify(MEMORY_SCHEMA));
   writeFileSync(
     join(workspacePath, 'relations.json'),
     JSON.stringify({
       has_therapist: { from: 'client', to: 'team_member', description: 'assigned therapist' },
     }),
   );
+}
+
+class DeterministicEmbedder {
+  readonly name = 'test-embedder';
+  readonly dimensions = 32;
+
+  async embed(text: string): Promise<number[]> {
+    const vector = new Array<number>(this.dimensions).fill(0);
+    const words = text.toLowerCase().split(/\W+/).filter(Boolean);
+    for (const word of words) {
+      let hash = 0x811c9dc5;
+      for (let index = 0; index < word.length; index++) {
+        hash ^= word.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+      }
+      vector[hash % this.dimensions] += 1;
+    }
+    const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
+    if (magnitude === 0) return vector;
+    return vector.map((value) => value / magnitude);
+  }
 }
 
 interface JsonResponse {
@@ -442,5 +474,68 @@ describe('entities controller — audit', () => {
     const audit = result.body['audit'] as Array<{ op: string }>;
     expect(audit.length).toBeGreaterThan(0);
     expect(audit[0]!.op).toBe('create');
+  });
+});
+
+describe('entities controller — semantic recall', () => {
+  beforeEach(() => {
+    // Re-register the context with an embedding provider so the
+    // controller picks up an EntityEmbeddingService for vectorizable
+    // kinds (memory, declared in writeWorkspace via x-vectorizable-property).
+    // We overwrite the singleton map entry rather than reset+register,
+    // so the route handlers (which captured the registry singleton at
+    // route-create time) see the new context.
+    context.store.close();
+    context = getEntityRegistry().register({
+      agentName: 'winston',
+      workspacePath,
+      databasePath: join(tempDir, 'entities.db'),
+      embeddingProvider: new DeterministicEmbedder(),
+    });
+  });
+
+  it('upsert auto-embeds vectorizable kinds', async () => {
+    const result = await httpRequest('POST', '/api/agents/winston/entities/', {
+      kind: 'memory',
+      name: 'about-scheduling',
+      properties: { text: 'discussed scheduling conflict with Heather', status: 'active' },
+    });
+    expect(result.status).toBe(200);
+    const entityId = (result.body as { entity: { id: string } }).entity.id;
+    const row = context.store.database
+      .prepare<
+        [string],
+        { entity_id: string }
+      >('SELECT entity_id FROM entity_embeddings WHERE entity_id = ?')
+      .get(entityId);
+    expect(row?.entity_id).toBe(entityId);
+  });
+
+  it('list with query= re-ranks by semantic similarity', async () => {
+    const matching = context.store.upsert('memory', 'about-scheduling', {
+      text: 'discussed scheduling conflict with Heather',
+      status: 'active',
+    });
+    const unrelated = context.store.upsert('memory', 'about-paperwork', {
+      text: 'paperwork is in good shape',
+      status: 'active',
+    });
+    await context.embeddingService!.ensureEmbedded(matching);
+    await context.embeddingService!.ensureEmbedded(unrelated);
+    const result = await httpRequest(
+      'GET',
+      '/api/agents/winston/entities/?kinds=memory&query=scheduling%20conflict',
+    );
+    expect(result.status).toBe(200);
+    const entities = (result.body as { entities: Array<{ id: string }> }).entities;
+    expect(entities[0]!.id).toBe(matching.id);
+  });
+
+  it('list without query= returns store-order results unchanged', async () => {
+    context.store.upsert('memory', 'a', { text: 'alpha', status: 'active' });
+    context.store.upsert('memory', 'b', { text: 'beta', status: 'active' });
+    const result = await httpRequest('GET', '/api/agents/winston/entities/?kinds=memory');
+    expect(result.status).toBe(200);
+    expect((result.body as { entities: unknown[] }).entities).toHaveLength(2);
   });
 });
