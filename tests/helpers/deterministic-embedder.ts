@@ -24,7 +24,7 @@ export class DeterministicEmbedder {
         hash = Math.imul(hash, 0x01000193) >>> 0;
       }
       const bucket = hash % this.dimensions;
-      vector[bucket] = (vector[bucket] ?? 0) + 1;
+      vector[bucket]! += 1;
     }
     const magnitude = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0));
     if (magnitude === 0) return vector;
