@@ -24,6 +24,27 @@ Tuning knobs on the provider: `maxAttempts` (default 5) and `retryBaseDelayMs` (
 
 Because secrets are read at startup, **rotating a 1Password item or moving Winston's vault requires editing the env file and restarting** — there is no live reload. To move to a different 1Password tenant/vault, update `SECRETS_CONFIG` (vault + item UUIDs) and `OP_SERVICE_ACCOUNT_TOKEN` in `/etc/clawndom-<agent>/clawndom.env`, then restart the service. 1Password service-account tokens are shown once at creation and cannot be retrieved later; if one is pasted anywhere insecure, treat it as compromised and rotate.
 
+## Webhook secrets (HMAC / bearer)
+
+A webhook provider in `PROVIDERS_CONFIG` authenticates inbound requests with a shared secret. There are two ways to supply it:
+
+- `hmacSecret` — an **inline literal** in `PROVIDERS_CONFIG`. Simple, but the secret then sits in plaintext in `clawndom.env` (root-only, not in git, not logged — but plaintext at rest, and not centrally rotatable).
+- `hmacSecretKey` — a **logical key resolved by `SecretManager`** (same keyed-secret pattern as the `slack-socket` provider's `appTokenSecret` / `botTokenSecret`). The value lives in the configured backend (e.g. 1Password) and never appears in `PROVIDERS_CONFIG`.
+
+**Prefer `hmacSecretKey`.** Set it to a key you also declare in `SECRETS_CONFIG`:
+
+```jsonc
+// PROVIDERS_CONFIG entry
+{ "name": "intake", "routePath": "/hooks/intake", "signatureStrategy": "bearer",
+  "hmacSecretKey": "intake-webhook-secret" }
+
+// SECRETS_CONFIG binding
+{ "key": "intake-webhook-secret", "provider": "onepassword",
+  "reference": "op://<vault>/<item>/<field>", "required": true }
+```
+
+A provider may set **exactly one** of `hmacSecret` / `hmacSecretKey` — setting both fails fast at config load (`validateProviderInvariants`). At request time the webhook controller resolves the key via `getSecretManager().getSecret(...)`; if the binding failed to resolve it fails closed (HTTP 500), never validating against an empty secret. `oidc` providers need neither (they verify Google-signed JWTs).
+
 ### Required Secrets
 
 | Secret | Where it comes from | What it's for |
