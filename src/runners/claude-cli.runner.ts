@@ -58,6 +58,14 @@ function buildCliArgs(options: RunOptions, systemPrompt: string | undefined): st
   // and dispatches to impl.{py,sh} with credentials injected from env.
   if (options.mcpBundle !== undefined) {
     args.push('--mcp-config', options.mcpBundle.mcpConfigPath);
+    // Option B (connector teardown): restrict the agent to ONLY the route's
+    // declared MCP bundle. Without this, the spawned claude-cli inherits the
+    // login account's Claude.ai connectors (Gmail/Calendar/Drive on the
+    // operator's Google account) — a second tool surface outside the route's
+    // `tools:` block and outside clawndom's per-tool audit log. The strict
+    // flag makes the route `tools:` declaration the enforced capability
+    // ceiling, restoring least-privilege and closing the audit gap.
+    args.push('--strict-mcp-config');
   }
   if (options.resumeSessionId !== undefined) {
     // Quota-pause recovery: continue the prior conversation rather than
