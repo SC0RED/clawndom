@@ -13,9 +13,30 @@ import type { SignatureStrategy } from '../strategies/signature';
 import { decodePubsubEnvelope } from '../strategies/transport/pubsub-envelope';
 import { getStringHeader } from '../lib/extract';
 import { getLogger } from '../lib/logging';
+import { getSecretManager } from '../secrets/manager';
 import { validateBuilderDispatchSenderGate } from '../system-agents/builder/sender-gate';
 
 const logger = getLogger('webhook-controller');
+
+/**
+ * Resolve a webhook provider's HMAC/bearer secret. `hmacSecretKey` (a
+ * SecretManager-backed key, e.g. a 1Password binding) takes precedence over
+ * the inline `hmacSecret` literal. Returns null when neither yields a value
+ * so the caller can fail closed with a 500 — never validating against an
+ * empty secret. Exactly one of the two is set (config invariant), but an
+ * `hmacSecretKey` whose binding failed to resolve still lands here as null.
+ */
+export function resolveHmacSecret(
+  provider: Pick<WebhookProviderConfig, 'hmacSecret' | 'hmacSecretKey'>,
+): string | null {
+  if (provider.hmacSecretKey !== undefined) {
+    const manager = getSecretManager();
+    return manager.hasSecret(provider.hmacSecretKey)
+      ? manager.getSecret(provider.hmacSecretKey)
+      : null;
+  }
+  return provider.hmacSecret ?? null;
+}
 
 /**
  * Slack Events API URL-verification challenge shape.
@@ -85,8 +106,11 @@ async function verifyRequestSignature(
   }
 
   // OIDC verifies tokens against Google's JWKs and doesn't use a static
-  // shared secret, so hmacSecret is required only for the other strategies.
-  if (provider.signatureStrategy !== 'oidc' && !provider.hmacSecret) {
+  // shared secret, so a resolved secret is required only for the other
+  // strategies. resolveHmacSecret() prefers the SecretManager-backed
+  // hmacSecretKey over the inline literal.
+  const hmacSecret = resolveHmacSecret(provider);
+  if (provider.signatureStrategy !== 'oidc' && hmacSecret === null) {
     logger.error({ provider: provider.name }, 'No HMAC secret configured');
     response.status(500).json({ error: 'Provider misconfigured' });
     return null;
@@ -109,7 +133,7 @@ async function verifyRequestSignature(
   const passed = await strategy.validate(
     rawBody,
     signatureHeader,
-    provider.hmacSecret ?? '',
+    hmacSecret ?? '',
     additionalHeaders,
     provider,
   );

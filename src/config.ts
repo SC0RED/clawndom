@@ -46,6 +46,16 @@ const webhookProviderSchema = baseProviderSchema.extend({
   transport: z.literal('webhook'),
   routePath: z.string().min(1),
   hmacSecret: z.string().min(1).optional(),
+  /**
+   * Logical key for the webhook's HMAC/bearer shared secret, resolved via
+   * the SecretManager (same keyed-secret pattern as slack-socket's
+   * appTokenSecret/botTokenSecret). Prefer this over the inline `hmacSecret`
+   * literal so the value lives in the configured backend (e.g. 1Password)
+   * instead of plaintext in PROVIDERS_CONFIG. Declare the matching binding
+   * in SECRETS_CONFIG. Exactly one of `hmacSecret` / `hmacSecretKey` may be
+   * set (enforced by validateProviderInvariants).
+   */
+  hmacSecretKey: z.string().min(1).optional(),
   signatureStrategy: z.enum(['websub', 'github', 'bearer', 'slack', 'oidc']),
   openclawHookUrl: z.string().url().optional(),
   /**
@@ -314,6 +324,16 @@ function validateProviderInvariants(provider: ProviderConfig): void {
   if (provider.signatureStrategy === 'oidc' && !provider.oidc) {
     throw new Error(
       `Provider '${provider.name}' uses signatureStrategy 'oidc' but is missing the 'oidc' config (audience is required).`,
+    );
+  }
+  if (provider.hmacSecret && provider.hmacSecretKey) {
+    throw new Error(
+      `Provider '${provider.name}' sets both 'hmacSecret' and 'hmacSecretKey' — use exactly one (prefer 'hmacSecretKey').`,
+    );
+  }
+  if (provider.signatureStrategy !== 'oidc' && !provider.hmacSecret && !provider.hmacSecretKey) {
+    throw new Error(
+      `Provider '${provider.name}' (signatureStrategy '${provider.signatureStrategy}') needs 'hmacSecret' or 'hmacSecretKey'.`,
     );
   }
 }
