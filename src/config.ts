@@ -331,6 +331,11 @@ function validateProviderInvariants(provider: ProviderConfig): void {
       `Provider '${provider.name}' sets both 'hmacSecret' and 'hmacSecretKey' — use exactly one (prefer 'hmacSecretKey').`,
     );
   }
+  if (provider.signatureStrategy !== 'oidc' && !provider.hmacSecret && !provider.hmacSecretKey) {
+    throw new Error(
+      `Provider '${provider.name}' (signatureStrategy '${provider.signatureStrategy}') needs 'hmacSecret' or 'hmacSecretKey'.`,
+    );
+  }
 }
 
 export function getSettings(): Settings {

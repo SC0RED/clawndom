@@ -12,6 +12,7 @@ describe('resolveHmacSecret', () => {
   afterEach(() => {
     manager?.close();
     manager = null;
+    delete process.env.WEBHOOK_TEST_SECRET;
   });
 
   it('returns the inline literal when only hmacSecret is set', () => {
@@ -38,7 +39,6 @@ describe('resolveHmacSecret', () => {
     expect(resolveHmacSecret({ hmacSecretKey: 'intake-webhook-secret' })).toBe(
       'resolved-from-manager',
     );
-    delete process.env.WEBHOOK_TEST_SECRET;
   });
 
   it('returns null when hmacSecretKey has no resolved binding (fail closed)', async () => {
@@ -70,6 +70,14 @@ describe('provider invariant: hmacSecret vs hmacSecretKey', () => {
     ]);
     resetSettings();
     expect(() => getSettings()).toThrow(/exactly one/);
+  });
+
+  it('rejects a non-oidc provider that has neither hmacSecret nor hmacSecretKey', () => {
+    process.env.PROVIDERS_CONFIG = JSON.stringify([
+      { name: 'naked', routePath: '/hooks/naked', signatureStrategy: 'bearer' },
+    ]);
+    resetSettings();
+    expect(() => getSettings()).toThrow(/needs 'hmacSecret' or 'hmacSecretKey'/);
   });
 
   it('accepts a provider that sets only hmacSecretKey', () => {
