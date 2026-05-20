@@ -273,6 +273,42 @@ describe('ClaudeCliRunner', () => {
     expect(args[idx + 1]).toBe('500');
   });
 
+  it('pairs --mcp-config with --strict-mcp-config so account connectors are excluded', async () => {
+    // Option B: the spawned claude-cli must use ONLY the route's MCP bundle.
+    // Without --strict-mcp-config it inherits the login account's Claude.ai
+    // connectors (Gmail/Calendar/Drive on the operator's Google account) — a
+    // second tool surface outside the route's tools: block and outside the
+    // audit log. The strict flag makes the route declaration the enforced
+    // capability ceiling.
+    vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
+    const runner = new ClaudeCliRunner(baseConfig);
+    await runner.run({
+      ...baseOptions,
+      mcpBundle: {
+        mcpConfigPath: '/tmp/clawndom-mcp/mcp-config.json',
+        toolConfigPath: '/tmp/clawndom-mcp/tools.json',
+        env: {},
+      },
+    });
+
+    const args = vi.mocked(spawn).mock.calls[0]![1] as string[];
+    const mcpIndex = args.indexOf('--mcp-config');
+    expect(mcpIndex).toBeGreaterThanOrEqual(0);
+    expect(args[mcpIndex + 1]).toBe('/tmp/clawndom-mcp/mcp-config.json');
+    expect(args).toContain('--strict-mcp-config');
+  });
+
+  it('omits --strict-mcp-config when no MCP bundle is provided', async () => {
+    // Strict is only meaningful alongside a bundle; a bundle-less run has no
+    // --mcp-config to be strict about.
+    vi.mocked(spawn).mockReturnValue(createMockProcess(0) as never);
+    const runner = new ClaudeCliRunner(baseConfig);
+    await runner.run(baseOptions);
+
+    const args = vi.mocked(spawn).mock.calls[0]![1] as string[];
+    expect(args).not.toContain('--strict-mcp-config');
+  });
+
   it('passes --resume <id> to claude when options.resumeSessionId is set', async () => {
     // Quota-pause recovery path: the worker pulls envelope.sessionId off
     // a previously-paused run and forwards it as resumeSessionId. The
