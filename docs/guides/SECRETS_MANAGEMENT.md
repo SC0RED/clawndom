@@ -4,6 +4,26 @@
 
 All credentials live in the **Engineering** vault in 1Password. The proxy loads secrets from environment variables at startup — on EC2 these are sourced from `/etc/clawndom/clawndom.env` (which systemd reads via `EnvironmentFile=`); locally, from a `.env` file (not committed). Non-primitive secrets (HMAC shared with a provider, Jira tokens, etc.) are resolved at runtime by `OnePasswordProvider` using the `OP_SERVICE_ACCOUNT_TOKEN` in the env file.
 
+## Resolution model
+
+`SecretManager` resolves every declared secret at agent load and holds the results in an **in-memory map for the lifetime of the process**. There is no on-disk secret cache — secrets are never written to `/run/clawndom` or anywhere else on disk. (An earlier file-cache existed; it was removed because plaintext secrets on disk — even on tmpfs — are an unnecessary exposure.) A restart re-resolves everything from the providers.
+
+Each declared secret is bound to exactly **one** provider (`env`, `onepassword`, `oauth`, or `file`) — it is not a fallback chain. At load, bindings are grouped by provider and each provider resolves its own group. Secrets that carry a TTL (e.g. short-lived `oauth` tokens) are kept fresh by refresh timers; static `onepassword` and `env` secrets are resolved once and only change on restart.
+
+### 1Password rate-limit safety
+
+`OnePasswordProvider` resolves its secrets **serially, not in parallel**, with **retry-and-exponential-backoff on rate-limit responses**. This matters because:
+
+- 1Password service accounts are rate limited (Family plan: 1,000 reads/24h account-wide; per-token hourly caps also apply). The daily window starts on the first request.
+- A boot that fired all `op read` calls concurrently — multiplied by a systemd restart loop — can exhaust the daily quota in minutes and lock the account out for the rest of the window. This actually happened (≈1,146 reads from ~118 boot attempts in one incident).
+- Serial resolution + backoff keeps a single boot's burst small and survives a transient "Too many requests" without crashing the boot.
+
+Tuning knobs on the provider: `maxAttempts` (default 5) and `retryBaseDelayMs` (default 1000).
+
+### Rotating a secret / pointing at a new vault
+
+Because secrets are read at startup, **rotating a 1Password item or moving Winston's vault requires editing the env file and restarting** — there is no live reload. To move to a different 1Password tenant/vault, update `SECRETS_CONFIG` (vault + item UUIDs) and `OP_SERVICE_ACCOUNT_TOKEN` in `/etc/clawndom-<agent>/clawndom.env`, then restart the service. 1Password service-account tokens are shown once at creation and cannot be retrieved later; if one is pasted anywhere insecure, treat it as compromised and rotate.
+
 ### Required Secrets
 
 | Secret | Where it comes from | What it's for |
