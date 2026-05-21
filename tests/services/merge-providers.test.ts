@@ -28,7 +28,7 @@ describe('mergeProviders', () => {
       [agent('winston', [provider('gmail-pubsub')]), agent('patch', [provider('jira')])],
       [provider('builder-callback')],
     );
-    expect(merged.map((p) => p.name).sort()).toEqual([
+    expect(merged.map((p) => p.name).sort((a, b) => a.localeCompare(b))).toEqual([
       'builder-callback',
       'env-only',
       'gmail-pubsub',

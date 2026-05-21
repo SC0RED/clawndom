@@ -32,7 +32,7 @@ function buildWinston(): ResolvedAgent {
   });
   return {
     name: 'winston',
-    dir: '/tmp/clawndom-winston-test',
+    dir: '/agents/winston',
     config: agentConfigSchema.parse({
       providers: [provider],
       routing: { 'practice-intake': { rules: [{ condition: { all_of: [] } }] } },
