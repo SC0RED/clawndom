@@ -32,10 +32,13 @@ if ! echo "$COMMAND" | grep -qF "$BOT_EMAIL"; then
     exit 2
 fi
 
-# Allow if make check-all is chained before git commit
-if ! echo "$COMMAND" | grep -qE 'make\s+check-all.*&&.*git\s+commit'; then
-    echo "CLAUDE.md requires 'make check-all' before every commit." >&2
-    echo "Chain it: make check-all && git commit ..." >&2
+# Allow if a full project check is chained before git commit.
+# clawndom uses `make check-all`; repos without that target (e.g. sc0red-website)
+# use their own full check, `npm run build` (astro check + astro build).
+if ! echo "$COMMAND" | grep -qE '(make\s+check-all|npm\s+run\s+build).*&&.*git\s+commit'; then
+    echo "A full project check must run before every commit." >&2
+    echo "Chain it: make check-all && git commit ...   (clawndom)" >&2
+    echo "      or: npm run build && git commit ...     (repos without make check-all)" >&2
     exit 2
 fi
 
