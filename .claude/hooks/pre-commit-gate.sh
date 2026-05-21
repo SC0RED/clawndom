@@ -1,9 +1,12 @@
 #!/bin/bash
-# Claude Code hook: Block git commit unless make check-all is chained before it,
-# and validate the commit message follows Conventional Commits format.
+# Claude Code hook: Block git commit unless a full project check is chained
+# before it, and validate the commit message follows Conventional Commits format.
 #
 # This enforces CLAUDE.md's #1 rule: all checks must pass before completing any task.
-# "make check-all" includes lint, test, security, naming, and SonarCloud.
+# The required pre-commit check is either:
+#   - "make check-all" (clawndom) -- lint, test, security, naming, and SonarCloud; or
+#   - "npm run build"  (repos without that target, e.g. sc0red-website) -- that
+#     repo's own full gate (astro check + astro build: type-check + production build).
 # Instead of trusting the AI to remember, we mechanically block commits without it.
 #
 # Requires: jq (brew install jq)
