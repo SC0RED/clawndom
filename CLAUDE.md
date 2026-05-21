@@ -51,7 +51,7 @@ Multi-provider: each webhook provider (Jira, GitHub, etc.) gets its own route, H
 | Retry + Backoff | `src/lib/utils/retry.ts` |
 | TTL Cache | `src/lib/utils/cache.ts` |
 | Structured Logging | `src/lib/logging/` |
-| Zod Validation | `src/middleware/validate.ts` |
+| Zod Validation | `src/controllers/` (schemas validated at the request boundary) |
 | Request Context | `src/lib/logging/context.ts` |
 | Agent Runners | `src/runners/` (strategy pattern) |
 | Secrets Management | `src/secrets/` (strategy pattern — env, 1password, oauth, file providers) |

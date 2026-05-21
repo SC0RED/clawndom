@@ -2,7 +2,3 @@
 # (e.g. @SC0RED/platform-team) once one exists on the GitHub org.
 
 * @ctcreel
-
-# Security-sensitive path stays called out so the next reviewer knows
-# it touches the GitHub App signing surface.
-/scripts/generate-github-app-token.sh @ctcreel
