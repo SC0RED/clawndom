@@ -8,7 +8,7 @@ import { load as parseYaml } from 'js-yaml';
 import { z } from 'zod';
 
 import { auditAgent } from '../audit';
-import { modelRuleSchema, providerSchema } from '../config';
+import { modelRuleSchema, providerSchema, validateProviderInvariants } from '../config';
 import type { AgentEntry, SharedToolsConfig, ProviderConfig } from '../config';
 import { getLogger } from '../lib/logging';
 import { runnerConfigSchema } from '../runners/types';
@@ -302,6 +302,10 @@ export function mergeProviders(
         `Provider '${provider.name}' is declared more than once (${existing} and ${source}). Declare each provider exactly once.`,
       );
     }
+    // Same cross-field auth invariants env providers get in parseProviders, so a
+    // malformed workspace/system provider (e.g. non-OIDC without a secret) fails
+    // at boot rather than at the first webhook.
+    validateProviderInvariants(provider);
     sourceByName.set(provider.name, source);
     merged.push(provider);
   };

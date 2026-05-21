@@ -321,7 +321,7 @@ function parseProviders(): ProviderConfig[] {
  * Cross-field invariants that don't fit into the schema branches cleanly
  * (refinements on a branch break discriminatedUnion). Throws on violation.
  */
-function validateProviderInvariants(provider: ProviderConfig): void {
+export function validateProviderInvariants(provider: ProviderConfig): void {
   if (provider.transport !== 'webhook') return;
   if (provider.signatureStrategy === 'oidc' && !provider.oidc) {
     throw new Error(

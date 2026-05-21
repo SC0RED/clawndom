@@ -74,4 +74,17 @@ describe('mergeProviders', () => {
       signatureStrategy: 'bearer',
     });
   });
+
+  it('rejects a workspace provider with an invalid auth shape at boot', () => {
+    const broken = providerSchema.parse({
+      name: 'broken',
+      transport: 'webhook',
+      routePath: '/hooks/broken',
+      signatureStrategy: 'bearer',
+      // schema-valid but invariant-invalid: no hmacSecret / hmacSecretKey
+    });
+    expect(() => mergeProviders([], [agent('winston', [broken])], [])).toThrow(
+      /needs 'hmacSecret' or 'hmacSecretKey'/,
+    );
+  });
 });
