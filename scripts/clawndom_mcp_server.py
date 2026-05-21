@@ -128,17 +128,37 @@ _MCP_CONTENT_KEY = "__mcp_content__"
 
 
 def _content_blocks(result):
-    """Return the MCP content-block list if ``result`` is the content-block
-    wrapper, else ``None``. Every block must be a dict with a known type."""
-    if not isinstance(result, dict):
-        return None
-    blocks = result.get(_MCP_CONTENT_KEY)
+    """Resolve the ``__mcp_content__`` wrapper into ``(blocks, error)``.
+
+    Three cases:
+      - key absent      → ``(None, None)``  (plain result; caller uses the text path)
+      - key present, ok → ``(blocks, None)`` (forward as MCP content)
+      - key present, bad → ``(None, "<reason>")``
+
+    Once a tool opts into the wrapper it's a strict contract: a malformed
+    payload is a tool-author bug, not a reason to silently fall back to JSON
+    (which would bypass multimodal forwarding *and* spill raw base64 into the
+    audit). Each block must be a dict with a known ``type`` and its required
+    payload fields.
+    """
+    if not isinstance(result, dict) or _MCP_CONTENT_KEY not in result:
+        return None, None
+    blocks = result[_MCP_CONTENT_KEY]
     if not isinstance(blocks, list) or not blocks:
-        return None
+        return None, f"{_MCP_CONTENT_KEY} must be a non-empty list of content blocks"
     for block in blocks:
-        if not isinstance(block, dict) or block.get("type") not in ("text", "image"):
-            return None
-    return blocks
+        if not isinstance(block, dict):
+            return None, f"{_MCP_CONTENT_KEY} blocks must be objects"
+        block_type = block.get("type")
+        if block_type == "text":
+            if not isinstance(block.get("text"), str):
+                return None, "text content block requires a string 'text' field"
+        elif block_type == "image":
+            if not isinstance(block.get("data"), str) or not isinstance(block.get("mimeType"), str):
+                return None, "image content block requires string 'data' and 'mimeType' fields"
+        else:
+            return None, f"unsupported content block type {block_type!r} (expected 'text' or 'image')"
+    return blocks, None
 
 
 def _summarize_blocks_for_audit(blocks, secrets):
@@ -152,6 +172,11 @@ def _summarize_blocks_for_audit(blocks, secrets):
         else:
             summary.append(_redact_value(block, secrets))
     return summary
+
+
+def _stringify(value):
+    """Text-path encoding: JSON for structured values, plain strings as-is."""
+    return value if isinstance(value, str) else json.dumps(value)
 
 
 class ToolRegistry:
@@ -211,15 +236,25 @@ class ToolRegistry:
 
         secret_values = list(creds.values())
         redacted_args = _redact_credentials(arguments, secret_values)
+        # Shape the MCP content + the audit view in one place. A malformed
+        # __mcp_content__ wrapper is surfaced as a failed result (not silently
+        # JSON-stringified), and image blocks are summarized for the audit so
+        # base64 never lands in the log.
         if error_summary is not None:
+            mcp_content = [{"type": "text", "text": _stringify(result)}]
             redacted_result = None
         else:
-            blocks = _content_blocks(result)
-            redacted_result = (
-                _summarize_blocks_for_audit(blocks, secret_values)
-                if blocks is not None
-                else _redact_credentials(result, secret_values)
-            )
+            blocks, block_error = _content_blocks(result)
+            if block_error is not None:
+                error_summary = block_error
+                mcp_content = [{"type": "text", "text": block_error}]
+                redacted_result = {"error": block_error}
+            elif blocks is not None:
+                mcp_content = blocks
+                redacted_result = _summarize_blocks_for_audit(blocks, secret_values)
+            else:
+                mcp_content = [{"type": "text", "text": _stringify(result)}]
+                redacted_result = _redact_credentials(result, secret_values)
         record = {
             "timestamp": _now_iso(),
             "agent_id": self.agent_id,
@@ -237,7 +272,7 @@ class ToolRegistry:
             _write_audit_record(record)
         except Exception as exc:
             _log(f"Failed to write audit record: {exc}")
-        return result, error_summary is not None
+        return mcp_content, error_summary is not None
 
 
 def _respond(message_id, result=None, error=None):
@@ -271,17 +306,10 @@ def _handle_request(registry, message):
         name = params.get("name", "")
         arguments = params.get("arguments", {})
         try:
+            # call_tool already shaped the MCP content array (text path,
+            # forwarded blocks, or a fail-fast error for a malformed wrapper).
             content, is_error = registry.call_tool(name, arguments)
-            blocks = _content_blocks(content)
-            if blocks is not None:
-                mcp_content = blocks
-            else:
-                text = json.dumps(content) if not isinstance(content, str) else content
-                mcp_content = [{"type": "text", "text": text}]
-            _respond(
-                message_id,
-                result={"content": mcp_content, "isError": is_error},
-            )
+            _respond(message_id, result={"content": content, "isError": is_error})
         except Exception as exc:
             _respond(message_id, error={"code": -32603, "message": str(exc)})
     else:

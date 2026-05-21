@@ -56,6 +56,16 @@ describe('MCP bridge — image content blocks (spawned Python server)', () => {
     ]}
 `,
       },
+      {
+        toolSegment: 'badwrap',
+        apiName: 'fixture_badwrap',
+        description: 'Returns a malformed content wrapper (image block missing mimeType)',
+        args: { value: { type: 'string', description: 'ignored' } },
+        secrets: [{ canonical: 'api_token', aliases: ['API_TOKEN'] }],
+        implPy: `def invoke(*, value, api_token):
+    return {"__mcp_content__": [{"type": "image", "data": "${FAKE_IMAGE}"}]}
+`,
+      },
     ]));
   });
 
@@ -71,7 +81,10 @@ describe('MCP bridge — image content blocks (spawned Python server)', () => {
       agentId: 'test-winston',
       routeId: 'slack-winston:chat',
       requestId: 'req-img-1',
-      toolCredentials: { fixture_viewfile: { api_token: 'super-secret-12345' } },
+      toolCredentials: {
+        fixture_viewfile: { api_token: 'super-secret-12345' },
+        fixture_badwrap: { api_token: 'super-secret-12345' },
+      },
       frames,
     });
     if (responses.length === 0 && stderr.length > 0) {
@@ -119,5 +132,27 @@ describe('MCP bridge — image content blocks (spawned Python server)', () => {
     expect(auditImage?.data).toBeUndefined(); // base64 never in the audit log
     // text block survives into the audit alongside the summarized image
     expect(summary.find((b) => b.type === 'text')?.text).toContain('downloaded bill.png');
+  });
+
+  it('fails fast (not silent text fallback) on a malformed content wrapper', async () => {
+    const responses = await drive([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'fixture_badwrap', arguments: { value: 'x' } },
+      },
+    ]);
+    const call = responses.find((r) => r.id === 2)?.result as ToolsCallResult | undefined;
+    expect(call?.isError).toBe(true);
+    expect(call?.content[0]?.text).toContain('image content block requires');
+    // the malformed wrapper is NOT JSON-stringified, so the base64 never leaks
+    expect(JSON.stringify(call?.content)).not.toContain(FAKE_IMAGE);
+    // audit records the error, not the raw base64 payload
+    const lines = (await readFile(auditPath, 'utf8')).trim().split('\n');
+    const record = JSON.parse(lines[lines.length - 1] ?? '{}') as AuditRecord;
+    expect(record.error_summary).toContain('image content block requires');
+    expect(JSON.stringify(record.result_summary)).not.toContain(FAKE_IMAGE);
   });
 });
