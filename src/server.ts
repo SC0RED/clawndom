@@ -6,7 +6,7 @@ import type { Logger } from 'pino';
 import { getActiveJobsRegistry } from './services/active-jobs.service';
 import { getSkippedWebhooksRegistry } from './services/skipped-webhooks.service';
 import { getRecentCompletionsRegistry } from './services/recent-completions.service';
-import { loadAgents } from './services/agent-loader.service';
+import { loadAgents, mergeProviders } from './services/agent-loader.service';
 import type { ResolvedAgent } from './services/agent-loader.service';
 import { initializeAgentVersion } from './services/version.service';
 import { buildAlertRegistry } from './services/alerts';
@@ -349,18 +349,14 @@ async function startServer(): Promise<void> {
   const settings = getSettings();
 
   const secretManager = await initializeSecrets(settings);
-  resolveProviderHmacSecrets(settings.providers, secretManager);
-  validateProviderEnvSecrets(settings.providers, secretManager);
-  validateSlackSocketSecrets(settings.providers, secretManager);
 
-  const runnersWithConnections = await registerSelectedRunners(settings, secretManager, logger);
-
+  // Load agents first: inbound providers are now declared in each agent's
+  // workspace. The PROVIDERS_CONFIG env list (already in settings.providers)
+  // is a deprecated fallback. loadAgents needs only the initialized
+  // SecretManager — not providers or runners — so it's safe to run here.
   const externalAgents = await loadAgents(settings.agents, settings.configDir);
   const systemAgents = await loadSystemAgents();
   const agents = [...externalAgents, ...systemAgents];
-  for (const provider of buildSystemAgentProviders()) {
-    settings.providers.push(provider);
-  }
   logger.info(
     {
       external: externalAgents.map((agent) => ({ name: agent.name, dir: agent.dir })),
@@ -368,6 +364,22 @@ async function startServer(): Promise<void> {
     },
     'Agents loaded',
   );
+
+  // Union the env fallback + workspace-declared providers + Builder's
+  // auto-injected providers into the deployment provider list, erroring on any
+  // name collision. settings.providers is read first, then replaced in place
+  // (its identity is shared with getSettings() consumers like the router).
+  const mergedProviders = mergeProviders(settings.providers, agents, buildSystemAgentProviders());
+  settings.providers.length = 0;
+  settings.providers.push(...mergedProviders);
+
+  // Providers are now fully known — resolve/validate their secrets and register
+  // the runner types they reference.
+  resolveProviderHmacSecrets(settings.providers, secretManager);
+  validateProviderEnvSecrets(settings.providers, secretManager);
+  validateSlackSocketSecrets(settings.providers, secretManager);
+
+  const runnersWithConnections = await registerSelectedRunners(settings, secretManager, logger);
 
   // SPE-2078: capture composite agent_version hash from involved repos.
   // Fails boot in CLAWNDOM_ENV=production if any repo has uncommitted changes.
