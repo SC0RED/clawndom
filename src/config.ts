@@ -212,9 +212,11 @@ const settingsSchema = z.object({
    */
   sessionPoolMaxActive: z.coerce.number().min(1).default(8),
   sessionsFilePath: z.string().default(''),
-  providers: z
-    .array(providerSchema)
-    .min(1, 'At least one provider must be configured in PROVIDERS_CONFIG'),
+  // No `.min(1)`: providers may come entirely from agents' workspace
+  // `providers:` blocks (the canonical home), so the PROVIDERS_CONFIG env is an
+  // optional, deprecated fallback that can be empty or absent. The full list is
+  // unioned from env + workspaces + system agents at boot (see mergeProviders).
+  providers: z.array(providerSchema).default([]),
   /** Local directory where agent repos are cloned. */
   configDir: z.string().default(join(homedir(), '.clawndom', 'agents')),
   /** Agents Clawndom should load from Git at startup. */

@@ -8,8 +8,8 @@ import { load as parseYaml } from 'js-yaml';
 import { z } from 'zod';
 
 import { auditAgent } from '../audit';
-import { modelRuleSchema } from '../config';
-import type { AgentEntry, SharedToolsConfig } from '../config';
+import { modelRuleSchema, providerSchema } from '../config';
+import type { AgentEntry, SharedToolsConfig, ProviderConfig } from '../config';
 import { getLogger } from '../lib/logging';
 import { runnerConfigSchema } from '../runners/types';
 import { listEmbeddingProviders } from './memory/embedding';
@@ -188,6 +188,16 @@ const agentRoutingSchema = z.object({
 export const agentConfigSchema = z.object({
   routing: z.record(z.string(), agentRoutingSchema).default({}),
   modelRules: z.record(z.string(), z.array(modelRuleSchema)).default({}),
+  /**
+   * Inbound providers this agent receives work from — transport + auth
+   * (signatureStrategy, secret-key references, oidc, channelMap). Declared
+   * here so an agent is fully defined by its workspace; the deployment-level
+   * PROVIDERS_CONFIG env is a deprecated fallback. The runtime unions these
+   * across loaded agents (see collectWorkspaceProviders) and errors on a
+   * name collision with differing config. Secret VALUES stay in SecretManager;
+   * only the key references live here.
+   */
+  providers: z.array(providerSchema).default([]),
   /** Per-agent memory namespaces. Pruning + provider/store binding live here. */
   memory: agentMemorySchema.optional(),
 });
@@ -266,6 +276,41 @@ export function slugifyRepoUrl(repoUrl: string): string {
     throw new Error(`Cannot derive clone directory from repo URL: ${repoUrl}`);
   }
   return parts.slice(-2).join('__');
+}
+
+/**
+ * Build the deployment-wide provider list from all sources, erroring on any
+ * duplicate name. A provider is the single global ingest+auth surface for its
+ * endpoint, so it must be declared exactly once across:
+ *   - `base` — the deprecated PROVIDERS_CONFIG env fallback,
+ *   - each agent's workspace `providers` block (the canonical home),
+ *   - `systemProviders` — Builder's auto-injected providers.
+ * The error names both colliding sources so a half-finished migration off the
+ * env config is obvious.
+ */
+export function mergeProviders(
+  base: readonly ProviderConfig[],
+  agents: readonly ResolvedAgent[],
+  systemProviders: readonly ProviderConfig[],
+): ProviderConfig[] {
+  const merged: ProviderConfig[] = [];
+  const sourceByName = new Map<string, string>();
+  const add = (provider: ProviderConfig, source: string): void => {
+    const existing = sourceByName.get(provider.name);
+    if (existing !== undefined) {
+      throw new Error(
+        `Provider '${provider.name}' is declared more than once (${existing} and ${source}). Declare each provider exactly once.`,
+      );
+    }
+    sourceByName.set(provider.name, source);
+    merged.push(provider);
+  };
+  for (const provider of base) add(provider, 'PROVIDERS_CONFIG env');
+  for (const agent of agents) {
+    for (const provider of agent.config.providers) add(provider, `workspace '${agent.name}'`);
+  }
+  for (const provider of systemProviders) add(provider, 'system-agent');
+  return merged;
 }
 
 export async function loadAgents(
