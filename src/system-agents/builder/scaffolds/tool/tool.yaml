@@ -1,0 +1,32 @@
+# Tool scaffold — one agency-tool (SPE-2078). A tool is an outbound capability an
+# agent calls during a run. Lives in agency-tools at agency_tools/<group>/__TOOL_NAME__/.
+# The directory name is the tool name unless `name:` overrides it.
+#
+# A good description tells the model when to call, when NOT to call, and what the
+# tool does — that's what drives correct tool selection.
+name: __TOOL_NAME__
+description: |
+  <One line: what this tool does.>
+
+  When to call:
+    - <the situation this tool is for>
+  When NOT to call:
+    - <the near-miss that should use a different tool, or no tool>
+  Behavior:
+    - <what it returns; any side effect>
+
+args:
+  __ARG__:
+    type: string # string | number | boolean | array | object
+    description: <what this argument is>
+  subject:
+    type: string
+    description: |
+      DWD impersonation subject. Omit to use the operator default.
+    optional: true
+
+# Secret VALUES never live here — only the kwarg -> SecretManager key reference.
+# clawndom resolves the value and injects it; an array lists fallback key names.
+# Delete this block if the tool needs no secret.
+secrets:
+  __TOKEN_KWARG__: [__SECRET_KEY__, __SECRET_KEY_FALLBACK__]
