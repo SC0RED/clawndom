@@ -93,17 +93,25 @@ describe('MCP bridge — image content blocks (spawned Python server)', () => {
     return responses;
   }
 
-  it('forwards text+image blocks as the tool result content array', async () => {
+  // initialize → tools/call → return the call result (shared by every test).
+  async function callTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolsCallResult | undefined> {
     const responses = await drive([
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-      {
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/call',
-        params: { name: 'fixture_viewfile', arguments: { value: 'bill.png' } },
-      },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } },
     ]);
-    const call = responses.find((r) => r.id === 2)?.result as ToolsCallResult | undefined;
+    return responses.find((r) => r.id === 2)?.result as ToolsCallResult | undefined;
+  }
+
+  async function readLastAudit(): Promise<AuditRecord> {
+    const lines = (await readFile(auditPath, 'utf8')).trim().split('\n');
+    return JSON.parse(lines[lines.length - 1] ?? '{}') as AuditRecord;
+  }
+
+  it('forwards text+image blocks as the tool result content array', async () => {
+    const call = await callTool('fixture_viewfile', { value: 'bill.png' });
     expect(call?.isError).toBe(false);
     expect(call?.content).toHaveLength(2);
     expect(call?.content[0]).toEqual({ type: 'text', text: 'downloaded bill.png token=supe' });
@@ -114,18 +122,8 @@ describe('MCP bridge — image content blocks (spawned Python server)', () => {
   });
 
   it('summarizes the image block in the audit (no base64 bytes logged)', async () => {
-    await drive([
-      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-      {
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/call',
-        params: { name: 'fixture_viewfile', arguments: { value: 'bill.png' } },
-      },
-    ]);
-    const lines = (await readFile(auditPath, 'utf8')).trim().split('\n');
-    const record = JSON.parse(lines[lines.length - 1] ?? '{}') as AuditRecord;
-    const summary = record.result_summary as ContentBlock[];
+    await callTool('fixture_viewfile', { value: 'bill.png' });
+    const summary = (await readLastAudit()).result_summary as ContentBlock[];
     expect(Array.isArray(summary)).toBe(true);
     const auditImage = summary.find((b) => b.type === 'image');
     expect(auditImage).toEqual({ type: 'image', mimeType: 'image/png', bytes: FAKE_IMAGE.length });
@@ -135,23 +133,13 @@ describe('MCP bridge — image content blocks (spawned Python server)', () => {
   });
 
   it('fails fast (not silent text fallback) on a malformed content wrapper', async () => {
-    const responses = await drive([
-      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-      {
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/call',
-        params: { name: 'fixture_badwrap', arguments: { value: 'x' } },
-      },
-    ]);
-    const call = responses.find((r) => r.id === 2)?.result as ToolsCallResult | undefined;
+    const call = await callTool('fixture_badwrap', { value: 'x' });
     expect(call?.isError).toBe(true);
     expect(call?.content[0]?.text).toContain('image content block requires');
     // the malformed wrapper is NOT JSON-stringified, so the base64 never leaks
     expect(JSON.stringify(call?.content)).not.toContain(FAKE_IMAGE);
     // audit records the error, not the raw base64 payload
-    const lines = (await readFile(auditPath, 'utf8')).trim().split('\n');
-    const record = JSON.parse(lines[lines.length - 1] ?? '{}') as AuditRecord;
+    const record = await readLastAudit();
     expect(record.error_summary).toContain('image content block requires');
     expect(JSON.stringify(record.result_summary)).not.toContain(FAKE_IMAGE);
   });
