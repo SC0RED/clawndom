@@ -95,12 +95,12 @@ describe('mergeProviders', () => {
     });
   });
 
-  it('derives an OIDC audience from PUBLIC_URL + routePath', () => {
+  it('derives an OIDC audience from PUBLIC_URL + routePath, normalizing slashes', () => {
     const merged = mergeProviders(
       [],
       [agent('winston', [oidcProvider('gmail-pubsub')])],
       [],
-      'https://winston-agent.example.ts.net',
+      'https://winston-agent.example.ts.net/', // trailing slash must not double up
     );
     expect(merged[0]).toMatchObject({
       oidc: { audience: 'https://winston-agent.example.ts.net/hooks/gmail-pubsub' },

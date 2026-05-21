@@ -312,7 +312,12 @@ function hydrateWorkspaceProvider(
         `Provider '${provider.name}' uses OIDC without an explicit audience and PUBLIC_URL is unset to derive one.`,
       );
     }
-    draft['oidc'] = { ...provider.oidc, audience: `${publicUrl}${provider.routePath}` };
+    // Normalize the join so a trailing slash on PUBLIC_URL or a missing leading
+    // slash on routePath can't produce a double- or no-slash audience (which
+    // would silently never match the token's aud claim).
+    const base = publicUrl.replace(/\/+$/, '');
+    const path = provider.routePath.startsWith('/') ? provider.routePath : `/${provider.routePath}`;
+    draft['oidc'] = { ...provider.oidc, audience: `${base}${path}` };
   }
 
   return providerSchema.parse(draft);
