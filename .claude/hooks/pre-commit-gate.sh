@@ -1,9 +1,12 @@
 #!/bin/bash
-# Claude Code hook: Block git commit unless make check-all is chained before it,
-# and validate the commit message follows Conventional Commits format.
+# Claude Code hook: Block git commit unless a full project check is chained
+# before it, and validate the commit message follows Conventional Commits format.
 #
 # This enforces CLAUDE.md's #1 rule: all checks must pass before completing any task.
-# "make check-all" includes lint, test, security, naming, and SonarCloud.
+# The required pre-commit check is either:
+#   - "make check-all" (clawndom) -- lint, test, security, naming, and SonarCloud; or
+#   - "npm run build"  (repos without that target, e.g. sc0red-website) -- that
+#     repo's own full gate (astro check + astro build: type-check + production build).
 # Instead of trusting the AI to remember, we mechanically block commits without it.
 #
 # Requires: jq (brew install jq)
@@ -32,10 +35,13 @@ if ! echo "$COMMAND" | grep -qF "$BOT_EMAIL"; then
     exit 2
 fi
 
-# Allow if make check-all is chained before git commit
-if ! echo "$COMMAND" | grep -qE 'make\s+check-all.*&&.*git\s+commit'; then
-    echo "CLAUDE.md requires 'make check-all' before every commit." >&2
-    echo "Chain it: make check-all && git commit ..." >&2
+# Allow if a full project check is chained before git commit.
+# clawndom uses `make check-all`; repos without that target (e.g. sc0red-website)
+# use their own full check, `npm run build` (astro check + astro build).
+if ! echo "$COMMAND" | grep -qE '(make\s+check-all|npm\s+run\s+build).*&&.*git\s+commit'; then
+    echo "A full project check must run before every commit." >&2
+    echo "Chain it: make check-all && git commit ...   (clawndom)" >&2
+    echo "      or: npm run build && git commit ...     (repos without make check-all)" >&2
     exit 2
 fi
 
