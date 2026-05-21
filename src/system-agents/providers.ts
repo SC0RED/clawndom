@@ -103,13 +103,21 @@ export function buildBuilderCallbackProvider(
  * Fail-soft on two missing prerequisites:
  *   - `CLAWNDOM_AGENT_TOKEN` not set — same bearer used by `/api/tasks`,
  *     so its absence is a serious deploy gap; skip and warn.
- *   - No claude-cli runner in `PROVIDERS_CONFIG` — Builder inherits her
- *     runner from a workspace agent, so without one there's nothing to
- *     stamp; skip and warn.
+ *   - No claude-cli runner among the candidate providers — Builder inherits
+ *     her runner from a workspace (or env) provider, so without one there's
+ *     nothing to stamp; skip and warn.
  * In both cases Builder is dormant for the boot; workspace agents are
  * unaffected.
+ *
+ * `candidateProviders` is the set Builder searches for an inheritable
+ * claude-cli runner — env (PROVIDERS_CONFIG) + every agent's workspace
+ * `providers`. Passed in (rather than read from settings) because providers
+ * now live in workspaces too, and an empty `PROVIDERS_CONFIG` is normal
+ * post-migration; reading only the env would leave Builder dormant.
  */
-export function buildSystemAgentProviders(): readonly WebhookProviderConfig[] {
+export function buildSystemAgentProviders(
+  candidateProviders: readonly ProviderConfig[],
+): readonly WebhookProviderConfig[] {
   const settings = getSettings();
   const agentToken = settings.agentToken;
   if (!agentToken) {
@@ -118,10 +126,10 @@ export function buildSystemAgentProviders(): readonly WebhookProviderConfig[] {
     );
     return [];
   }
-  const inherited = findInheritableClaudeCliRunner(settings.providers);
+  const inherited = findInheritableClaudeCliRunner(candidateProviders);
   if (inherited === undefined) {
     logger.warn(
-      'No claude-cli provider in PROVIDERS_CONFIG; Builder needs an inheritable runner. Builder dormant.',
+      'No claude-cli provider in the env or any workspace; Builder needs an inheritable runner. Builder dormant.',
     );
     return [];
   }
