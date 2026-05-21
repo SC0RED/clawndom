@@ -35,7 +35,8 @@ this change.
     `runner.binary` at boot).
   - **tools** — a base agency-tool scaffold: `tool.yaml` + `impl.py` with the
     `invoke()` signature, secret-key declaration, and the credential/per-call
-    audit conventions (SPE-2078).
+    audit conventions (SPE-2078 — route-side agent tool use; see
+    `docs/guides/TOOLS_AND_TOOL_USE.md`).
 - Builder **uses** these scaffolds to generate new components. "Add a route,"
   "add a tool," and "create a new agent" each produce a well-formed, best-practice
   component, parameterized per-instance — never a copy of an existing one.
@@ -59,9 +60,17 @@ this change.
   from the base route scaffold.
 - **builder-scaffold-tool** — Builder adds an agency-tool from the base tool
   scaffold.
-- **workspace-template-expansion** — the generic `{{ config.* }}` / `${...}`
-  rendering machinery, resolved at agent-load before the worker sees the config.
-  (Extracted as engine machinery; product configs supply the variables.)
+- **workspace-template-expansion** — the generic rendering machinery, with two
+  distinct, non-overlapping contexts (full precedence/escaping/undefined-variable
+  rules settled in design.md):
+  - `{{ config.* }}` — Nunjucks rendering of **template bodies** at dispatch
+    (the existing template renderer; adds `config` as a top-level alongside
+    payload + context).
+  - `${...}` — value substitution in **`clawndom.yaml`** (routing conditions,
+    provider fields) at **agent-load**, before the worker sees the parsed config.
+  An **undefined reference is a hard error** (fail-fast, no silent blank); the
+  two syntaxes never nest (one renders bodies, the other expands config values).
+  Product configs supply the variables.
 - **workspace-audit-hardcoded-values** — generic audit: a scaffolded workspace
   must not hardcode instance-specific literals; the deny-list is derived from the
   instance config so a real config never trips the rule against itself.
