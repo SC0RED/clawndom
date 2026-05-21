@@ -109,6 +109,30 @@ When a route declares tools and the model emits a `tool_use` block:
    result_summary, error_summary, latency_ms, request_id, correlation_id
    (defaults to request_id), and agent_version.
 
+## Returning content the model must *see* (images)
+
+By default a tool's return value is JSON-serialized into one text block — fine
+for structured data the model reads. When a tool needs the model to actually
+**view** something (a downloaded photo, a scanned document), it returns the MCP
+content-block wrapper instead:
+
+```python
+def invoke(*, file_id, bot_token):
+    image_bytes, mime = _download(file_id, bot_token)
+    import base64
+    return {"__mcp_content__": [
+        {"type": "text", "text": "Downloaded statement.jpg → Drive <link>"},
+        {"type": "image", "data": base64.b64encode(image_bytes).decode(), "mimeType": mime},
+    ]}
+```
+
+The bridge (`scripts/clawndom_mcp_server.py`) forwards `__mcp_content__` as the
+tool result's `content` array — text + `image` blocks reach the multimodal
+model intact. Blocks must be `{"type":"text","text":...}` or
+`{"type":"image","data":<base64>,"mimeType":...}`. The audit record stores the
+text but **summarizes each image as `{type, mimeType, bytes}`** — base64 never
+lands in the log. Tools that return plain dicts/strings are unchanged.
+
 Credentials are never:
 - in the rendered system prompt
 - in the rendered user prompt
