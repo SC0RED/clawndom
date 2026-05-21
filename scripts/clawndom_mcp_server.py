@@ -117,6 +117,43 @@ def _now_iso():
     return datetime.datetime.utcnow().isoformat() + "Z"
 
 
+# A tool that needs the model to *see* content (a downloaded image, etc.)
+# returns it wrapped as {"__mcp_content__": [block, ...]}, where each block is
+# an MCP content block — {"type": "text", "text": ...} or
+# {"type": "image", "data": <base64>, "mimeType": ...}. The bridge forwards
+# these as the tool result's `content` array instead of JSON-stringifying the
+# value, so the image actually reaches the multimodal model. Tools that return
+# plain dicts/strings are unaffected (text path, as before).
+_MCP_CONTENT_KEY = "__mcp_content__"
+
+
+def _content_blocks(result):
+    """Return the MCP content-block list if ``result`` is the content-block
+    wrapper, else ``None``. Every block must be a dict with a known type."""
+    if not isinstance(result, dict):
+        return None
+    blocks = result.get(_MCP_CONTENT_KEY)
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") not in ("text", "image"):
+            return None
+    return blocks
+
+
+def _summarize_blocks_for_audit(blocks, secrets):
+    """Audit-safe view: keep redacted text blocks; replace image payloads with a
+    type+size summary so base64 bytes never land in the audit log."""
+    summary = []
+    for block in blocks:
+        if block.get("type") == "image":
+            data = block.get("data") or ""
+            summary.append({"type": "image", "mimeType": block.get("mimeType"), "bytes": len(data)})
+        else:
+            summary.append(_redact_value(block, secrets))
+    return summary
+
+
 class ToolRegistry:
     def __init__(self, config):
         # config["tools"]: list of {name, description, args, secrets, reference, directory}.
@@ -174,9 +211,15 @@ class ToolRegistry:
 
         secret_values = list(creds.values())
         redacted_args = _redact_credentials(arguments, secret_values)
-        redacted_result = (
-            _redact_credentials(result, secret_values) if error_summary is None else None
-        )
+        if error_summary is not None:
+            redacted_result = None
+        else:
+            blocks = _content_blocks(result)
+            redacted_result = (
+                _summarize_blocks_for_audit(blocks, secret_values)
+                if blocks is not None
+                else _redact_credentials(result, secret_values)
+            )
         record = {
             "timestamp": _now_iso(),
             "agent_id": self.agent_id,
@@ -229,13 +272,15 @@ def _handle_request(registry, message):
         arguments = params.get("arguments", {})
         try:
             content, is_error = registry.call_tool(name, arguments)
-            text = json.dumps(content) if not isinstance(content, str) else content
+            blocks = _content_blocks(content)
+            if blocks is not None:
+                mcp_content = blocks
+            else:
+                text = json.dumps(content) if not isinstance(content, str) else content
+                mcp_content = [{"type": "text", "text": text}]
             _respond(
                 message_id,
-                result={
-                    "content": [{"type": "text", "text": text}],
-                    "isError": is_error,
-                },
+                result={"content": mcp_content, "isError": is_error},
             )
         except Exception as exc:
             _respond(message_id, error={"code": -32603, "message": str(exc)})
