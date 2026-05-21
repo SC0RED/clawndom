@@ -127,6 +127,22 @@ def _now_iso():
 _MCP_CONTENT_KEY = "__mcp_content__"
 
 
+def _validate_content_block(block):
+    """Return an error message if a single content block is malformed, else None."""
+    if not isinstance(block, dict):
+        return f"{_MCP_CONTENT_KEY} blocks must be objects"
+    block_type = block.get("type")
+    if block_type == "text":
+        if not isinstance(block.get("text"), str):
+            return "text content block requires a string 'text' field"
+        return None
+    if block_type == "image":
+        if not isinstance(block.get("data"), str) or not isinstance(block.get("mimeType"), str):
+            return "image content block requires string 'data' and 'mimeType' fields"
+        return None
+    return f"unsupported content block type {block_type!r} (expected 'text' or 'image')"
+
+
 def _content_blocks(result):
     """Resolve the ``__mcp_content__`` wrapper into ``(blocks, error)``.
 
@@ -147,17 +163,9 @@ def _content_blocks(result):
     if not isinstance(blocks, list) or not blocks:
         return None, f"{_MCP_CONTENT_KEY} must be a non-empty list of content blocks"
     for block in blocks:
-        if not isinstance(block, dict):
-            return None, f"{_MCP_CONTENT_KEY} blocks must be objects"
-        block_type = block.get("type")
-        if block_type == "text":
-            if not isinstance(block.get("text"), str):
-                return None, "text content block requires a string 'text' field"
-        elif block_type == "image":
-            if not isinstance(block.get("data"), str) or not isinstance(block.get("mimeType"), str):
-                return None, "image content block requires string 'data' and 'mimeType' fields"
-        else:
-            return None, f"unsupported content block type {block_type!r} (expected 'text' or 'image')"
+        error = _validate_content_block(block)
+        if error is not None:
+            return None, error
     return blocks, None
 
 

@@ -29,7 +29,7 @@ interface ToolsCallResult {
 }
 interface AuditRecord {
   tool_name: string;
-  result_summary: ContentBlock[] | unknown;
+  result_summary: unknown;
   error_summary: string | null;
 }
 
