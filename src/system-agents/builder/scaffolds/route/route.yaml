@@ -1,0 +1,29 @@
+# Route scaffold — one inbound route: a provider (how events arrive + how they're
+# authenticated) plus the routing rule that handles them. Merge this into the
+# agent's clawndom.yaml. Replace every __PLACEHOLDER__; the provider `name` and
+# the `routing:` key must match.
+#
+# The provider declares ONLY portable ingest/auth. clawndom fills the
+# machine-specific facts at boot, so this stays identical across deployments:
+#   - runner.workDirectory  <- the agent's clone dir
+#   - runner.binary         <- PATH ('claude')
+#   - oidc.audience         <- PUBLIC_URL + routePath  (oidc routes only)
+# Secret VALUES live in SecretManager; only the key NAME appears here.
+providers:
+  - name: __ROUTE_NAME__
+    transport: webhook # or: slack-socket
+    signatureStrategy: bearer # websub | github | bearer | slack | oidc
+    routePath: /hooks/__ROUTE_NAME__
+    hmacSecretKey: __SECRET_KEY__ # SecretManager key; provide its value via SECRETS_CONFIG
+    runner: { type: claude-cli }
+
+routing:
+  __ROUTE_NAME__:
+    rules:
+      - id: __ROUTE_NAME__-handle # stable id — survives name: renames
+        name: Handle __ROUTE_NAME__ events
+        condition:
+          all_of: [] # matches every event; narrow with equals/exists/matches as needed
+        messageTemplate: templates/__ROUTE_NAME__.md
+        inputs: [] # declare the {{ vars }} the template consumes (producer/consumer contract)
+        dispatches: [] # declare internal taskTypes this rule dispatches, if any
