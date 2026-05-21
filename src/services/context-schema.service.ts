@@ -21,8 +21,8 @@ export interface ContextSchemas {
 
 export function buildContextSchemas(agent: ResolvedAgent): ContextSchemas {
   const providers: Record<string, JsonSchema> = {};
-  for (const providerName of Object.keys(agent.config.routing)) {
-    const schema = getProviderPayloadSchema(providerName);
+  for (const [providerName, routing] of Object.entries(agent.config.routing)) {
+    const schema = getProviderPayloadSchema(providerName, routing);
     if (schema !== undefined) providers[providerName] = schema;
   }
   return { agent: agent.name, providers };

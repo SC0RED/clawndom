@@ -40,7 +40,7 @@ export function checkConditionPaths(config: AuditConfig): AuditFinding[] {
   const findings: AuditFinding[] = [];
 
   for (const [providerName, routing] of Object.entries(config.routing)) {
-    const providerSchema = getProviderPayloadSchema(providerName);
+    const providerSchema = getProviderPayloadSchema(providerName, routing);
     if (providerSchema === undefined) continue;
 
     for (let i = 0; i < routing.rules.length; i += 1) {
@@ -54,7 +54,7 @@ export function checkConditionPaths(config: AuditConfig): AuditFinding[] {
           rule: 'condition-path-unknown',
           message: `routing.${providerName}.${ruleId} conditions on \`${path}\` but that path isn't defined in the ${providerName} payload schema.`,
           path: 'clawndom.yaml',
-          hint: `Either fix the typo, or extend src/strategies/payload-schemas/${getSchemaFileForProvider(providerName)} to model the field. The editor's condition builder uses the same schema for typeahead — adding the field here helps both consumers.`,
+          hint: `Either fix the typo, or model the field — declare a payloadSchema (or payloadFamily) on routing.${providerName}, or extend the built-in family in src/strategies/payload-schemas/provider-families.json. The editor's condition builder uses the same schema for typeahead, so adding the field helps both consumers.`,
         });
       }
     }
@@ -113,10 +113,4 @@ function processCondition(condition: Condition, schema: JsonSchema, unknown: str
 function checkField(field: string, schema: JsonSchema, unknown: string[]): void {
   const result = resolvePath(schema, field);
   if (!result.exists) unknown.push(field);
-}
-
-function getSchemaFileForProvider(providerName: string): string {
-  if (providerName.startsWith('slack')) return 'slack.ts';
-  if (providerName.startsWith('gmail')) return 'gmail-pubsub.ts';
-  return `${providerName}.ts`;
 }
