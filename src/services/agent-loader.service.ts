@@ -182,7 +182,7 @@ const agentRoutingSchema = z.object({
   // typeahead + the audit's path check. Absent both, the resolver falls
   // back to the built-in families by provider name/prefix.
   payloadSchema: jsonSchemaSchema.optional(),
-  payloadFamily: z.string().optional(),
+  payloadFamily: z.string().trim().min(1).optional(),
 });
 
 export const agentConfigSchema = z.object({

@@ -45,7 +45,7 @@ const auditRuleSchema = z.object({
 const auditRoutingSchema = z.object({
   rules: z.array(auditRuleSchema).default([]),
   payloadSchema: jsonSchemaSchema.optional(),
-  payloadFamily: z.string().optional(),
+  payloadFamily: z.string().trim().min(1).optional(),
 });
 
 const auditConfigSchema = z.object({

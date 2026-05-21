@@ -27,14 +27,16 @@ const jsonSchemaTypeSchema = z.enum([
 ]);
 
 export const jsonSchemaSchema: z.ZodType<JsonSchema> = z.lazy(() =>
-  z.object({
-    type: z.union([jsonSchemaTypeSchema, z.array(jsonSchemaTypeSchema)]).optional(),
-    description: z.string().optional(),
-    properties: z.record(z.string(), jsonSchemaSchema).optional(),
-    required: z.array(z.string()).optional(),
-    items: jsonSchemaSchema.optional(),
-    additionalProperties: z.union([z.boolean(), jsonSchemaSchema]).optional(),
-    enum: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
-    passthrough: z.boolean().optional(),
-  }),
+  z
+    .object({
+      type: z.union([jsonSchemaTypeSchema, z.array(jsonSchemaTypeSchema)]).optional(),
+      description: z.string().optional(),
+      properties: z.record(z.string(), jsonSchemaSchema).optional(),
+      required: z.array(z.string()).optional(),
+      items: jsonSchemaSchema.optional(),
+      additionalProperties: z.union([z.boolean(), jsonSchemaSchema]).optional(),
+      enum: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+      passthrough: z.boolean().optional(),
+    })
+    .strict(),
 );
