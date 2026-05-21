@@ -223,8 +223,13 @@ const openclawRunnerConfigSchema = z.object({
 
 const claudeCliRunnerConfigSchema = z.object({
   type: z.literal('claude-cli'),
-  /** Working directory for the Claude CLI process. */
-  workDirectory: z.string().min(1),
+  /**
+   * Working directory for the Claude CLI process. Optional in config: for a
+   * workspace-declared provider it's omitted and clawndom fills it with the
+   * agent's clone dir at provider-merge time (the dir is a machine fact clawndom
+   * already knows, not something a portable workspace should hard-code).
+   */
+  workDirectory: z.string().min(1).optional(),
   /** Path to the claude binary (default: resolved via PATH). */
   binary: z.string().optional(),
   /** System prompt passed via --system-prompt flag. */

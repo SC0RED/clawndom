@@ -8,7 +8,12 @@ import { load as parseYaml } from 'js-yaml';
 import { z } from 'zod';
 
 import { auditAgent } from '../audit';
-import { modelRuleSchema, providerSchema, validateProviderInvariants } from '../config';
+import {
+  modelRuleSchema,
+  providerSchema,
+  validateProviderInvariants,
+  isWebhookProvider,
+} from '../config';
 import type { AgentEntry, SharedToolsConfig, ProviderConfig } from '../config';
 import { getLogger } from '../lib/logging';
 import { runnerConfigSchema } from '../runners/types';
@@ -279,41 +284,101 @@ export function slugifyRepoUrl(repoUrl: string): string {
 }
 
 /**
- * Build the deployment-wide provider list from all sources, erroring on any
- * duplicate name. A provider is the single global ingest+auth surface for its
- * endpoint, so it must be declared exactly once across:
- *   - `base` — the deprecated PROVIDERS_CONFIG env fallback,
- *   - each agent's workspace `providers` block (the canonical home),
- *   - `systemProviders` — Builder's auto-injected providers.
- * The error names both colliding sources so a half-finished migration off the
- * env config is obvious.
+ * Fill the host-specific fields a portable workspace omits, using facts clawndom
+ * already holds: a claude-cli runner's `workDirectory` is the agent's clone dir,
+ * and an OIDC provider's `audience` is the deployment's public URL + route. The
+ * draft is re-validated through `providerSchema` so the result is well-typed
+ * without any cast.
+ */
+function hydrateWorkspaceProvider(
+  provider: ProviderConfig,
+  agentDir: string,
+  publicUrl: string | undefined,
+): ProviderConfig {
+  const draft: Record<string, unknown> = { ...provider };
+
+  if (provider.runner?.type === 'claude-cli' && provider.runner.workDirectory === undefined) {
+    draft['runner'] = { ...provider.runner, workDirectory: agentDir };
+  }
+
+  if (
+    isWebhookProvider(provider) &&
+    provider.signatureStrategy === 'oidc' &&
+    provider.oidc !== undefined &&
+    provider.oidc.audience === undefined
+  ) {
+    if (publicUrl === undefined) {
+      throw new Error(
+        `Provider '${provider.name}' uses OIDC without an explicit audience and PUBLIC_URL is unset to derive one.`,
+      );
+    }
+    draft['oidc'] = { ...provider.oidc, audience: `${publicUrl}${provider.routePath}` };
+  }
+
+  return providerSchema.parse(draft);
+}
+
+function emitInlineSecretWarning(provider: ProviderConfig, source: string): void {
+  if (isWebhookProvider(provider) && provider.hmacSecret !== undefined) {
+    logger.warn(
+      { provider: provider.name, source },
+      'Provider uses an inline hmacSecret literal; migrate to hmacSecretKey (SecretManager). Inline secrets are deprecated.',
+    );
+  }
+}
+
+/**
+ * Build the deployment-wide provider list. The workspace `providers` block is
+ * the canonical home; Builder's system providers are added next; the
+ * PROVIDERS_CONFIG env is a **deprecated fallback** kept only for providers not
+ * yet migrated to a workspace.
+ *
+ * Precedence (workspace/system over env) is deliberate: it lets a workspace be
+ * migrated without editing the host env in the same breath — a shadowed env
+ * entry is dropped with a warning rather than crashing boot on a duplicate. A
+ * genuine misconfiguration (the *same* provider declared by two workspaces, or a
+ * workspace colliding with a system provider) still throws. Every provider is
+ * run through the same cross-field auth invariants so a malformed one fails at
+ * boot, not at the first webhook.
  */
 export function mergeProviders(
-  base: readonly ProviderConfig[],
+  envProviders: readonly ProviderConfig[],
   agents: readonly ResolvedAgent[],
   systemProviders: readonly ProviderConfig[],
+  publicUrl?: string,
 ): ProviderConfig[] {
   const merged: ProviderConfig[] = [];
   const sourceByName = new Map<string, string>();
+
   const add = (provider: ProviderConfig, source: string): void => {
     const existing = sourceByName.get(provider.name);
     if (existing !== undefined) {
       throw new Error(
-        `Provider '${provider.name}' is declared more than once (${existing} and ${source}). Declare each provider exactly once.`,
+        `Provider '${provider.name}' is declared by both ${existing} and ${source}. Declare each provider exactly once.`,
       );
     }
-    // Same cross-field auth invariants env providers get in parseProviders, so a
-    // malformed workspace/system provider (e.g. non-OIDC without a secret) fails
-    // at boot rather than at the first webhook.
     validateProviderInvariants(provider);
+    emitInlineSecretWarning(provider, source);
     sourceByName.set(provider.name, source);
     merged.push(provider);
   };
-  for (const provider of base) add(provider, 'PROVIDERS_CONFIG env');
+
   for (const agent of agents) {
-    for (const provider of agent.config.providers) add(provider, `workspace '${agent.name}'`);
+    for (const provider of agent.config.providers) {
+      add(hydrateWorkspaceProvider(provider, agent.dir, publicUrl), `workspace '${agent.name}'`);
+    }
   }
   for (const provider of systemProviders) add(provider, 'system-agent');
+  for (const provider of envProviders) {
+    if (sourceByName.has(provider.name)) {
+      logger.warn(
+        { provider: provider.name },
+        'PROVIDERS_CONFIG entry is shadowed by a workspace/system provider of the same name; remove it from the env (deprecated).',
+      );
+      continue;
+    }
+    add(provider, 'PROVIDERS_CONFIG env');
+  }
   return merged;
 }
 

@@ -142,6 +142,11 @@ interface OidcConfig {
 function resolveConfig(provider: WebhookProviderConfig): OidcConfig | null {
   if (provider.transport !== 'webhook') return null;
   if (!provider.oidc) return null;
+  // Fail closed: an OIDC provider with no resolved audience can't have its token
+  // audience-checked, so reject rather than verify against `undefined`. clawndom
+  // fills the audience at provider merge (explicit, or PUBLIC_URL + routePath);
+  // reaching here without one means misconfiguration, and a webhook must not pass.
+  if (provider.oidc.audience === undefined) return null;
   return {
     audience: provider.oidc.audience,
     issuers: provider.oidc.issuers ?? GOOGLE_DEFAULT_ISSUERS,

@@ -663,6 +663,13 @@ async function allocatePerDispatchWorkDirectory(
   if (provider.runner?.type !== 'claude-cli') return undefined;
   if (provider.runner.workDirectoryStrategy !== 'per-dispatch') return undefined;
   const scratchRoot = provider.runner.workDirectory;
+  if (scratchRoot === undefined) {
+    // per-dispatch needs an explicit scratch root to mkdtemp under; it's never
+    // the agent's clone dir (those get cleaned up after each run).
+    throw new Error(
+      `Provider '${provider.name}' uses workDirectoryStrategy 'per-dispatch' but declares no workDirectory scratch root.`,
+    );
+  }
   await mkdir(scratchRoot, { recursive: true });
   const workDirectory = await mkdtemp(join(scratchRoot, 'dispatch-'));
 

@@ -369,7 +369,12 @@ async function startServer(): Promise<void> {
   // auto-injected providers into the deployment provider list, erroring on any
   // name collision. settings.providers is read first, then replaced in place
   // (its identity is shared with getSettings() consumers like the router).
-  const mergedProviders = mergeProviders(settings.providers, agents, buildSystemAgentProviders());
+  const mergedProviders = mergeProviders(
+    settings.providers,
+    agents,
+    buildSystemAgentProviders(),
+    settings.publicUrl,
+  );
   settings.providers.length = 0;
   settings.providers.push(...mergedProviders);
 
