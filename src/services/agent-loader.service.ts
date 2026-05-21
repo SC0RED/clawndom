@@ -16,6 +16,7 @@ import { listEmbeddingProviders } from './memory/embedding';
 import { agentMemorySchema, ruleMemorySchema } from './memory/config-schemas';
 import { listVectorStores } from './memory/vector-store';
 import { conditionSchema } from '../strategies/routing';
+import { jsonSchemaSchema } from '../strategies/payload-schemas';
 import { listSessionKeyStrategies, sessionConfigSchema } from '../strategies/session-key';
 import { ruleToolsSchema, type ToolRef } from './tools/config-schemas';
 import { loadToolDescriptor } from './tools/parse';
@@ -176,6 +177,12 @@ export const agentRuleSchema = z.object({
 
 const agentRoutingSchema = z.object({
   rules: z.array(agentRuleSchema).default([]),
+  // Declarative inbound payload shape for this provider: an inline schema,
+  // or `payloadFamily` naming a built-in family. Drives routing-condition
+  // typeahead + the audit's path check. Absent both, the resolver falls
+  // back to the built-in families by provider name/prefix.
+  payloadSchema: jsonSchemaSchema.optional(),
+  payloadFamily: z.string().optional(),
 });
 
 export const agentConfigSchema = z.object({

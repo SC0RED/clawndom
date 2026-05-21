@@ -8,6 +8,7 @@ import { modelRuleSchema } from '../config';
 import { ruleMemorySchema, agentMemorySchema } from '../services/memory/config-schemas';
 import { ruleToolsSchema } from '../services/tools/config-schemas';
 import { conditionSchema } from '../strategies/routing';
+import { jsonSchemaSchema } from '../strategies/payload-schemas';
 import { sessionConfigSchema } from '../strategies/session-key';
 import { runnerConfigSchema } from '../runners/types';
 
@@ -43,6 +44,8 @@ const auditRuleSchema = z.object({
 
 const auditRoutingSchema = z.object({
   rules: z.array(auditRuleSchema).default([]),
+  payloadSchema: jsonSchemaSchema.optional(),
+  payloadFamily: z.string().optional(),
 });
 
 const auditConfigSchema = z.object({
