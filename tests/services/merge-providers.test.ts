@@ -7,13 +7,34 @@ import {
   type ResolvedAgent,
 } from '../../src/services/agent-loader.service';
 
-function provider(name: string): ProviderConfig {
+function provider(name: string, routePath = `/hooks/${name}`): ProviderConfig {
+  return providerSchema.parse({
+    name,
+    transport: 'webhook',
+    routePath,
+    signatureStrategy: 'bearer',
+    hmacSecretKey: `${name}_secret`,
+  });
+}
+
+function claudeCliProvider(name: string): ProviderConfig {
   return providerSchema.parse({
     name,
     transport: 'webhook',
     routePath: `/hooks/${name}`,
     signatureStrategy: 'bearer',
     hmacSecretKey: `${name}_secret`,
+    runner: { type: 'claude-cli' }, // workDirectory omitted on purpose
+  });
+}
+
+function oidcProvider(name: string): ProviderConfig {
+  return providerSchema.parse({
+    name,
+    transport: 'webhook',
+    routePath: `/hooks/${name}`,
+    signatureStrategy: 'oidc',
+    oidc: { serviceAccountEmail: 'svc@project.iam.gserviceaccount.com' }, // audience omitted
   });
 }
 
@@ -43,13 +64,7 @@ describe('mergeProviders', () => {
         [agent('winston', [provider('shared')]), agent('patch', [provider('shared')])],
         [],
       ),
-    ).toThrow("Provider 'shared' is declared more than once");
-  });
-
-  it('errors when a workspace provider collides with the env fallback', () => {
-    expect(() =>
-      mergeProviders([provider('jira')], [agent('patch', [provider('jira')])], []),
-    ).toThrow('declared more than once');
+    ).toThrow("Provider 'shared' is declared by both");
   });
 
   it('errors when a workspace provider collides with a system provider', () => {
@@ -59,20 +74,59 @@ describe('mergeProviders', () => {
         [agent('winston', [provider('builder-callback')])],
         [provider('builder-callback')],
       ),
-    ).toThrow('declared more than once');
+    ).toThrow("Provider 'builder-callback' is declared by both");
+  });
+
+  it('lets a workspace provider shadow a same-named env fallback (workspace wins)', () => {
+    const merged = mergeProviders(
+      [provider('jira', '/hooks/env-jira')],
+      [agent('patch', [provider('jira', '/hooks/workspace-jira')])],
+      [],
+    );
+    const jira = merged.filter((p) => p.name === 'jira');
+    expect(jira).toHaveLength(1);
+    expect(jira[0]).toMatchObject({ routePath: '/hooks/workspace-jira' });
+  });
+
+  it('hydrates a claude-cli runner workDirectory from the agent clone dir', () => {
+    const merged = mergeProviders([], [agent('winston', [claudeCliProvider('intake')])], []);
+    expect(merged[0]).toMatchObject({
+      runner: { type: 'claude-cli', workDirectory: '/agents/winston' },
+    });
+  });
+
+  it('derives an OIDC audience from PUBLIC_URL + routePath, normalizing slashes', () => {
+    const merged = mergeProviders(
+      [],
+      [agent('winston', [oidcProvider('gmail-pubsub')])],
+      [],
+      'https://winston-agent.example.ts.net/', // trailing slash must not double up
+    );
+    expect(merged[0]).toMatchObject({
+      oidc: { audience: 'https://winston-agent.example.ts.net/hooks/gmail-pubsub' },
+    });
+  });
+
+  it('throws when an OIDC provider has no audience and no PUBLIC_URL to derive one', () => {
+    expect(() =>
+      mergeProviders([], [agent('winston', [oidcProvider('gmail-pubsub')])], []),
+    ).toThrow(/OIDC without an explicit audience/);
+  });
+
+  it('accepts (with deprecation) a provider using an inline hmacSecret literal', () => {
+    const inline = providerSchema.parse({
+      name: 'legacy',
+      transport: 'webhook',
+      routePath: '/hooks/legacy',
+      signatureStrategy: 'bearer',
+      hmacSecret: 'inline-literal',
+    });
+    const merged = mergeProviders([inline], [], []);
+    expect(merged.map((p) => p.name)).toEqual(['legacy']);
   });
 
   it('returns an empty list when no providers are declared anywhere', () => {
     expect(mergeProviders([], [agent('winston', [])], [])).toEqual([]);
-  });
-
-  it('preserves full provider config, not just names', () => {
-    const merged = mergeProviders([], [agent('winston', [provider('gmail-pubsub')])], []);
-    expect(merged[0]).toMatchObject({
-      name: 'gmail-pubsub',
-      transport: 'webhook',
-      signatureStrategy: 'bearer',
-    });
   });
 
   it('rejects a workspace provider with an invalid auth shape at boot', () => {

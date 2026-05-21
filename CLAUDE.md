@@ -58,6 +58,7 @@ Multi-provider: each webhook provider (Jira, GitHub, etc.) gets its own route, H
 | Prompt Observability | `src/services/worker.service.ts` (hash at info, full at debug) |
 | Agent Tool Use (SPE-2078) | `src/services/tools/` — route-side `tools:` declaration, credential-agent pattern via MCP, per-call audit log. See `docs/guides/TOOLS_AND_TOOL_USE.md`. |
 | Agent Versioning | `src/services/version.service.ts` + `src/lib/version/` — deterministic sha256 over involved repos, served at `GET /api/version`, embedded in every audit record. |
+| Provider Config | `src/config.ts` `providerSchema` + each agent's workspace `providers:` block (canonical home; `PROVIDERS_CONFIG` env is a deprecated fallback). Unioned at boot by `mergeProviders` (`src/services/agent-loader.service.ts`). See `docs/guides/PROVIDERS.md`. |
 
 ## Commands
 

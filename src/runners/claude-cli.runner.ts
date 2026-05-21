@@ -290,6 +290,13 @@ export class ClaudeCliRunner implements AgentRunner {
   private readonly systemPrompt: string | undefined;
 
   constructor(config: ClaudeCliRunnerConfig) {
+    if (config.workDirectory === undefined) {
+      // Fail fast: workspace providers omit workDirectory and clawndom fills it
+      // from the agent's clone dir during provider merge. Reaching the runner
+      // without one means that hydration was skipped — a wiring bug, not a
+      // condition to paper over with a silent cwd fallback.
+      throw new Error('claude-cli runner requires workDirectory (fill it at provider merge)');
+    }
     this.workDirectory = config.workDirectory;
     this.binary = config.binary ?? 'claude';
     this.systemPrompt = config.systemPrompt;

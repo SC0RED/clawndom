@@ -77,7 +77,13 @@ const webhookProviderSchema = baseProviderSchema.extend({
    */
   oidc: z
     .object({
-      audience: z.string().min(1),
+      /**
+       * Expected token audience. Optional in config: for a workspace-declared
+       * provider it's omitted and clawndom derives it from `PUBLIC_URL` + the
+       * provider's `routePath` at merge time, since the public URL is a
+       * per-deployment fact, not something a portable workspace should pin.
+       */
+      audience: z.string().min(1).optional(),
       issuers: z.array(z.string().min(1)).min(1).optional(),
       serviceAccountEmail: z.string().email().optional(),
       jwksUri: z.string().url().optional(),
@@ -217,6 +223,14 @@ const settingsSchema = z.object({
   // optional, deprecated fallback that can be empty or absent. The full list is
   // unioned from env + workspaces + system agents at boot (see mergeProviders).
   providers: z.array(providerSchema).default([]),
+  /**
+   * Public base URL this deployment is reachable at (e.g.
+   * `https://winston-agent.tail….ts.net`). Per-deployment fact used to derive a
+   * provider's OIDC `audience` (`PUBLIC_URL` + `routePath`) so workspace
+   * providers don't pin a host URL. Optional; required only when an OIDC
+   * provider omits an explicit `audience`.
+   */
+  publicUrl: z.string().url().optional(),
   /** Local directory where agent repos are cloned. */
   configDir: z.string().default(join(homedir(), '.clawndom', 'agents')),
   /** Agents Clawndom should load from Git at startup. */
@@ -368,6 +382,7 @@ export function getSettings(): Settings {
       process.env['SESSIONS_FILE_PATH'] ||
       `${process.env['HOME']}/.openclaw/agents/${process.env['OPENCLAW_AGENT_ID'] || 'patch'}/sessions/sessions.json`,
     providers: parseProviders(),
+    publicUrl: process.env['PUBLIC_URL'],
     configDir: process.env['CLAWNDOM_CONFIG_DIR'],
     agents: parseJsonEnv('AGENTS_CONFIG'),
     agentToken: process.env['CLAWNDOM_AGENT_TOKEN'],
