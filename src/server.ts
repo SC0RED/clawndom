@@ -369,10 +369,16 @@ async function startServer(): Promise<void> {
   // auto-injected providers into the deployment provider list, erroring on any
   // name collision. settings.providers is read first, then replaced in place
   // (its identity is shared with getSettings() consumers like the router).
+  // Builder inherits its runner from any claude-cli provider — env or a
+  // workspace — so search both (env may legitimately be empty post-migration).
+  const runnerCandidates = [
+    ...settings.providers,
+    ...agents.flatMap((agent) => agent.config.providers),
+  ];
   const mergedProviders = mergeProviders(
     settings.providers,
     agents,
-    buildSystemAgentProviders(),
+    buildSystemAgentProviders(runnerCandidates),
     settings.publicUrl,
   );
   settings.providers.length = 0;

@@ -2,7 +2,7 @@ import { join } from 'node:path';
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { resetSettings } from '../../src/config';
+import { getSettings, resetSettings, providerSchema } from '../../src/config';
 import {
   buildBuilderCallbackProvider,
   buildBuilderDispatchProvider,
@@ -73,7 +73,7 @@ describe('system-agent providers', () => {
     process.env['CLAWNDOM_CONFIG_DIR'] = '/home/clawndom/.clawndom/agents';
     process.env['PROVIDERS_CONFIG'] = JSON.stringify([CLAUDE_CLI_PROVIDER]);
     resetSettings();
-    const providers = buildSystemAgentProviders();
+    const providers = buildSystemAgentProviders(getSettings().providers);
     expect(providers).toHaveLength(2);
     expect(providers.map((provider) => provider.name)).toEqual([
       'builder-dispatch',
@@ -89,7 +89,7 @@ describe('system-agent providers', () => {
     process.env['CLAWNDOM_CONFIG_DIR'] = '/home/clawndom/.clawndom/agents';
     process.env['PROVIDERS_CONFIG'] = JSON.stringify([CLAUDE_CLI_PROVIDER]);
     resetSettings();
-    for (const provider of buildSystemAgentProviders()) {
+    for (const provider of buildSystemAgentProviders(getSettings().providers)) {
       expect(provider.signatureStrategy).toBe('bearer');
     }
   });
@@ -99,7 +99,7 @@ describe('system-agent providers', () => {
     process.env['CLAWNDOM_CONFIG_DIR'] = '/home/clawndom/.clawndom/agents';
     process.env['PROVIDERS_CONFIG'] = JSON.stringify([CLAUDE_CLI_PROVIDER]);
     resetSettings();
-    for (const provider of buildSystemAgentProviders()) {
+    for (const provider of buildSystemAgentProviders(getSettings().providers)) {
       expect(provider.runner?.type).toBe('claude-cli');
       if (provider.runner?.type === 'claude-cli') {
         expect(provider.runner.binary).toBe('/usr/bin/claude');
@@ -112,7 +112,7 @@ describe('system-agent providers', () => {
     process.env['CLAWNDOM_CONFIG_DIR'] = '/home/clawndom/.clawndom/agents';
     process.env['PROVIDERS_CONFIG'] = JSON.stringify([CLAUDE_CLI_PROVIDER]);
     resetSettings();
-    for (const provider of buildSystemAgentProviders()) {
+    for (const provider of buildSystemAgentProviders(getSettings().providers)) {
       if (provider.runner?.type === 'claude-cli') {
         expect(provider.runner.workDirectoryStrategy).toBe('per-dispatch');
       } else {
@@ -127,7 +127,7 @@ describe('system-agent providers', () => {
     process.env['PROVIDERS_CONFIG'] = JSON.stringify([CLAUDE_CLI_PROVIDER]);
     resetSettings();
     const expected = join('/home/clawndom/.clawndom', 'system-agents', 'builder');
-    for (const provider of buildSystemAgentProviders()) {
+    for (const provider of buildSystemAgentProviders(getSettings().providers)) {
       if (provider.runner?.type === 'claude-cli') {
         expect(provider.runner.workDirectory).toBe(expected);
       }
@@ -137,7 +137,7 @@ describe('system-agent providers', () => {
   it('returns empty (fail-soft) when CLAWNDOM_AGENT_TOKEN is not set', () => {
     delete process.env['CLAWNDOM_AGENT_TOKEN'];
     resetSettings();
-    expect(buildSystemAgentProviders()).toEqual([]);
+    expect(buildSystemAgentProviders(getSettings().providers)).toEqual([]);
   });
 
   it('returns empty (fail-soft) when no claude-cli provider is configured', () => {
@@ -152,6 +152,33 @@ describe('system-agent providers', () => {
       },
     ]);
     resetSettings();
-    expect(buildSystemAgentProviders()).toEqual([]);
+    expect(buildSystemAgentProviders(getSettings().providers)).toEqual([]);
+  });
+
+  it('inherits Builder runner from a workspace provider when PROVIDERS_CONFIG is empty', () => {
+    // Regression: post-migration the env is empty and the only claude-cli
+    // runner lives in a workspace provider. Builder must still find it.
+    process.env['CLAWNDOM_AGENT_TOKEN'] = 'live-token';
+    process.env['CLAWNDOM_CONFIG_DIR'] = '/home/clawndom/.clawndom/agents';
+    process.env['PROVIDERS_CONFIG'] = '[]';
+    resetSettings();
+    const workspaceProviders = [
+      providerSchema.parse({
+        name: 'gmail-pubsub',
+        transport: 'webhook',
+        routePath: '/hooks/gmail-pubsub',
+        signatureStrategy: 'bearer',
+        hmacSecretKey: 'gmail-secret',
+        runner: { type: 'claude-cli' },
+      }),
+    ];
+    const providers = buildSystemAgentProviders([
+      ...getSettings().providers,
+      ...workspaceProviders,
+    ]);
+    expect(providers.map((provider) => provider.name)).toEqual([
+      'builder-dispatch',
+      'builder-callback',
+    ]);
   });
 });
