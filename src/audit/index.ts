@@ -1,6 +1,3 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-
 import { checkConditionPaths } from './checks/condition-paths';
 import { checkDispatchDeclaration } from './checks/dispatch-declaration';
 import { checkDispatchToolPresent } from './checks/dispatch-tool-present';
@@ -12,7 +9,7 @@ import { checkTemplateInputs } from './checks/template-inputs';
 import { checkTemplatesExist } from './checks/templates-exist';
 import { checkToolUseDeclared } from './checks/tool-use-declared';
 import { findSharedDir } from './injection-scan';
-import { loadAgentConfig } from './load-config';
+import { loadAgentConfig, resolveAgentConfigPath } from './load-config';
 import type { AuditFinding, AuditReport } from './types';
 
 export interface AuditOptions {
@@ -30,15 +27,15 @@ export async function auditAgent(
   agentDir: string,
   options: AuditOptions = {},
 ): Promise<AuditReport> {
-  if (!existsSync(join(agentDir, 'clawndom.yaml'))) {
+  if (resolveAgentConfigPath(agentDir) === null) {
     return {
       agentDir,
       findings: [
         {
           severity: 'error',
-          rule: 'missing-clawndom-yaml',
-          message: `No clawndom.yaml found at ${join(agentDir, 'clawndom.yaml')}. The audit target must be the agent workspace root.`,
-          hint: 'Pass the directory that contains clawndom.yaml (e.g. workspaces/winston).',
+          rule: 'missing-workspace-config',
+          message: `No agency.yaml or clawndom.yaml found in ${agentDir}. The audit target must be the agent workspace root.`,
+          hint: 'Pass the directory that contains agency.yaml (or the legacy clawndom.yaml), e.g. workspaces/winston.',
         },
       ],
     };

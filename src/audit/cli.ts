@@ -12,7 +12,7 @@ Usage:
   clawndom-audit <agent-dir> [--shared-dir <path>] [--json]
 
 Arguments:
-  <agent-dir>            Path to the agent workspace (the directory containing clawndom.yaml).
+  <agent-dir>            Path to the agent workspace (the directory containing agency.yaml, or legacy clawndom.yaml).
 
 Options:
   --shared-dir <path>    Path to workspaces/shared/ for multi-agent repos.

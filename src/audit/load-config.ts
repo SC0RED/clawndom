@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -63,8 +64,31 @@ export interface LoadedConfig {
   readonly configPath: string;
 }
 
+/**
+ * Resolve the path to the agent's workspace-config YAML inside `agentDir`,
+ * preferring the post-SPE-2115 `agency.yaml` and falling back to the legacy
+ * `clawndom.yaml`. Returns `null` when neither exists — the audit and the
+ * loader both treat that as "this directory isn't an agent workspace".
+ */
+export function resolveAgentConfigPath(agentDir: string): string | null {
+  const agencyPath = join(agentDir, 'agency.yaml');
+  if (existsSync(agencyPath)) {
+    return agencyPath;
+  }
+  const clawndomPath = join(agentDir, 'clawndom.yaml');
+  if (existsSync(clawndomPath)) {
+    return clawndomPath;
+  }
+  return null;
+}
+
 export async function loadAgentConfig(agentDir: string): Promise<LoadedConfig> {
-  const configPath = join(agentDir, 'clawndom.yaml');
+  const configPath = resolveAgentConfigPath(agentDir);
+  if (configPath === null) {
+    throw new Error(
+      `No agency.yaml or clawndom.yaml found in ${agentDir}. The audit target must be the agent workspace root.`,
+    );
+  }
   const rawYaml = await readFile(configPath, 'utf-8');
   const parsed = parseYaml(rawYaml);
   const config = auditConfigSchema.parse(parsed);

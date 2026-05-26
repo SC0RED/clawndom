@@ -58,13 +58,13 @@ describe('auditAgent — happy path', () => {
     expect(report.findings).toEqual([]);
   });
 
-  it('flags missing clawndom.yaml at the agent root', async () => {
+  it('flags missing workspace config at the agent root', async () => {
     const { agentDir } = await makeFixture({
       'templates/smoke.md': 'orphan template',
     });
     const report = await auditAgent(agentDir);
     expect(report.findings).toHaveLength(1);
-    expect(report.findings[0]?.rule).toBe('missing-clawndom-yaml');
+    expect(report.findings[0]?.rule).toBe('missing-workspace-config');
   });
 });
 
