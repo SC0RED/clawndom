@@ -127,7 +127,7 @@ describe('workspace controller', () => {
   });
 
   describe('POST /api/workspace/:agent/audit', () => {
-    it('returns the audit report shape (findings array) for a workspace with no clawndom.yaml — surfaces missing-clawndom-yaml error', async () => {
+    it('returns the audit report shape (findings array) for a workspace with no config — surfaces missing-workspace-config error', async () => {
       await startWithAgent({ name: 'winston', dir: workspaceDir, config: EMPTY_CONFIG });
       const response = await fetch(`${baseUrl}/api/workspace/winston/audit`, { method: 'POST' });
       expect(response.status).toBe(200);
@@ -135,7 +135,7 @@ describe('workspace controller', () => {
         findings: Array<{ severity: string; rule: string }>;
       };
       expect(Array.isArray(body.findings)).toBe(true);
-      const missingYaml = body.findings.find((f) => f.rule === 'missing-clawndom-yaml');
+      const missingYaml = body.findings.find((f) => f.rule === 'missing-workspace-config');
       expect(missingYaml?.severity).toBe('error');
     });
 
