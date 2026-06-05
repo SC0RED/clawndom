@@ -14,10 +14,19 @@ const equalsLeafSchema = z.object({
   }),
 });
 
+// SPE-2162 — the Rust Agency runtime substitutes `${shared.PATH}` against
+// each workspace's `shared/*.json` data at config-load time. clawndom's audit
+// runs on the *raw* YAML (no substitution), so it would reject a placeholder
+// string at a `string[]` slot. Accept the whole-string placeholder shape here
+// so the audit can validate roster-driven routes without a substitution pass
+// of its own. Anything else still requires an array of strings.
+const sharedPlaceholderSchema = z
+  .string()
+  .regex(/^\$\{shared\.[A-Za-z0-9_.-]+\}$/, 'must be a `${shared.X.Y}` placeholder');
 const inLeafSchema = z.object({
   in: z.object({
     field: z.string().min(1),
-    values: z.array(z.string()).min(1),
+    values: z.union([z.array(z.string()).min(1), sharedPlaceholderSchema]),
   }),
 });
 
@@ -47,7 +56,7 @@ const existsLeafSchema = z.object({
 
 export type Condition =
   | { equals: { field: string; value: string } }
-  | { in: { field: string; values: string[] } }
+  | { in: { field: string; values: string[] | string } }
   | { matches: { field: string; pattern: string; flags?: string } }
   | { exists: { field: string } }
   | { any_item: { path: string; where: Condition } }
@@ -98,7 +107,19 @@ function evaluateEquals(payload: unknown, field: string, target: string): boolea
   return stringifyResolved(resolved) === target;
 }
 
-function evaluateIn(payload: unknown, field: string, values: readonly string[]): boolean {
+function evaluateIn(payload: unknown, field: string, values: readonly string[] | string): boolean {
+  // SPE-2162 — clawndom's audit accepts `${shared.X}` placeholders so the
+  // Rust runtime can substitute them at load time. If anything ever calls
+  // `evaluateCondition` on an un-substituted placeholder, that's a bug in
+  // the caller (clawndom shouldn't be evaluating live events anymore;
+  // that's the Rust runtime's job), so fail loud rather than silently
+  // never-match.
+  if (typeof values === 'string') {
+    throw new Error(
+      `evaluateIn received an unresolved \`${values}\` placeholder for field "${field}" — ` +
+        'clawndom does not substitute shared-data placeholders; only the Rust Agency runtime does.',
+    );
+  }
   const resolved = resolveFieldPath(payload, field);
   if (resolved === undefined || resolved === null) {
     return false;

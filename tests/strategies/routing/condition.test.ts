@@ -17,6 +17,27 @@ describe('conditionSchema', () => {
     expect(parsed).toEqual({ in: { field: 'a', values: ['x', 'y'] } });
   });
 
+  // SPE-2162 — clawndom's audit accepts a `${shared.PATH}` placeholder at
+  // `in.values` so the Rust Agency runtime can substitute it against the
+  // workspace's `shared/*.json` at load time. The audit validates the raw
+  // YAML (no substitution pass), so without this the placeholder string
+  // would be rejected at a `string[]` slot.
+  it('accepts a ${shared.X} placeholder at in.values for runtime substitution', () => {
+    const parsed = conditionSchema.parse({
+      in: { field: 'emailAddress', values: '${shared.team.therapists}' },
+    });
+    expect(parsed).toEqual({
+      in: { field: 'emailAddress', values: '${shared.team.therapists}' },
+    });
+  });
+
+  it('rejects a non-placeholder string at in.values (must be array or ${shared.X})', () => {
+    expect(() =>
+      conditionSchema.parse({ in: { field: 'a', values: 'not-a-placeholder' } }),
+    ).toThrow();
+    expect(() => conditionSchema.parse({ in: { field: 'a', values: '${other.thing}' } })).toThrow();
+  });
+
   it('accepts a valid matches leaf with flags', () => {
     const parsed = conditionSchema.parse({
       matches: { field: 'a', pattern: '^foo', flags: 'i' },
