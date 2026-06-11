@@ -24,6 +24,12 @@ export const toolRefSchema = z
       message:
         'Python tool reference must be a dotted path of identifiers (letters/digits/underscores only; no hyphens).',
     }),
+    // Gate 2 of the runtime-authorization model (SPE-2174, Rust runtime):
+    // when present, the MCP bridge materializes this tool into a run only
+    // when the job's runtime-stamped actor holds one of the listed roles.
+    // The TypeScript runtime predates the feature and ignores it; the
+    // auditor accepts it so gated workspaces pass CI.
+    requiresRole: z.array(z.string().min(1)).optional(),
   })
   .strict();
 
