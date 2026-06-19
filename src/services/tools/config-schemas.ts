@@ -30,6 +30,12 @@ export const toolRefSchema = z
     // The TypeScript runtime predates the feature and ignores it; the
     // auditor accepts it so gated workspaces pass CI.
     requiresRole: z.array(z.string().min(1)).optional(),
+    // Residency hint (GH-163, Rust runtime): when true, the Rust MCP bridge
+    // routes this tool to the deferred server so its schema loads on demand via
+    // ToolSearch instead of eagerly. Annotation only — never affects which tools
+    // a route may use. The TypeScript runtime ignores it; the auditor accepts it
+    // so residency-tuned workspaces pass CI.
+    deferred: z.boolean().optional(),
   })
   .strict();
 
