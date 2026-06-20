@@ -64,6 +64,18 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/CloudWatchLogsReadOnlyAccess
+      Policies:
+        - PolicyName: AssumeCrossAccountLogsReader
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource:
+                  - arn:aws:iam::205293249227:role/clawndom-logs-reader
+                  - arn:aws:iam::950743373172:role/clawndom-logs-reader
       Tags:
         - Key: Service
           Value: clawndom
